@@ -55,8 +55,9 @@ pub fn with_version(bytes: &[u8], version: u32) -> Vec<u8> {
 
 /// A cache directory that does not exist, so the binary never reads the user's clangd index of system headers.
 pub const NO_CACHE_HOME: &str = "/nonexistent/cache";
-/// Isolates git from the user's and the system's configuration and fixes commit metadata.
-pub const GIT_ENV: [(&str, &str); 8] = [
+/// Isolates git from the user's and the system's configuration and fixes commit metadata; also keeps the
+/// binary that the post-checkout hook starts away from the user's clangd cache.
+pub const GIT_ENV: [(&str, &str); 9] = [
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
     ("GIT_CONFIG_NOSYSTEM", "1"),
     ("GIT_AUTHOR_NAME", "Test Author"),
@@ -65,6 +66,7 @@ pub const GIT_ENV: [(&str, &str); 8] = [
     ("GIT_COMMITTER_NAME", "Test Committer"),
     ("GIT_COMMITTER_EMAIL", "committer@example.com"),
     ("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z"),
+    ("XDG_CACHE_HOME", NO_CACHE_HOME),
 ];
 /// Source files of the fixture TU's include graph, relative to the project root.
 pub const SAMPLE_SOURCES: [&str; 5] = ["src/tu0.cpp", "include/lib/h0.h", "include/lib/h1.h", "include/lib/h2.h", "include/lib/h3.h"];

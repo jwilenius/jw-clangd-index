@@ -5,14 +5,16 @@ mod common;
 use std::collections::HashSet;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{
     CDB_RELATIVE_PATH, HEADER_SHARD, NO_CACHE_HOME, SAMPLE_ROOT, add_worktree, create_committed_repo, create_indexed_repo, fixture_dir,
-    git, isolate_git_env, read_fixture, with_version,
+    git, git_output, isolate_git_env, read_fixture, with_version,
 };
 use jw_clangd_index::format::string_table::TableCompression;
+use jw_clangd_index::hook::HOOK_MARKER;
 use jw_clangd_index::relocate::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationRequest, relocate_index};
 use jw_clangd_index::relocate::path_map::{PathMap, RootMapping};
 use tempfile::TempDir;
@@ -21,6 +23,9 @@ const SUCCESS_EXIT_CODE: i32 = 0;
 const DIFFERENT_EXIT_CODE: i32 = 1;
 const ERROR_EXIT_CODE: i32 = 2;
 const DIFF_TARGET_ROOT: &str = "/work/wt";
+const FOREIGN_HOOK: &str = "#!/bin/sh\necho foreign hook\n";
+const HOOK_MODE: u32 = 0o755;
+const PERMISSION_BITS: u32 = 0o777;
 /// Start of the fixture header's shard name, which relocation changes after it.
 const HEADER_SHARD_PREFIX: &str = "h0.h.";
 /// A format version this tool cannot decode.
@@ -85,6 +90,10 @@ fn index_shard_names(root: &Path) -> HashSet<String> {
 fn shard_names(index_dir: &Path) -> HashSet<String> {
     let names = fs::read_dir(index_dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap());
     names.filter(|name| name.ends_with(".idx")).collect()
+}
+
+fn hook_path(repo: &Path) -> PathBuf {
+    repo.join(".git/hooks/post-checkout")
 }
 
 fn assert_contains(text: &str, expected: &str) {
@@ -305,4 +314,78 @@ fn diff_reports_shard_missing_from_b() {
 
     assert_eq!(run.exit_code, DIFFERENT_EXIT_CODE);
     assert_contains(&run.stdout, &format!("only in A: {HEADER_SHARD_PREFIX}"));
+}
+
+#[test]
+fn installed_hook_relocates_into_new_worktree() {
+    let repos = empty_repos();
+    create_indexed_repo(&repos.main);
+
+    let install_run = run_tool(&repos.main, &["install-hook", "--relocate-cdb"]);
+    add_worktree(&repos.main, &repos.worktree);
+    let reinstall_run = run_tool(&repos.main, &["install-hook", "--relocate-cdb"]);
+
+    assert_eq!(install_run.exit_code, SUCCESS_EXIT_CODE, "{}", install_run.stderr);
+    assert_eq!(install_run.stdout, format!("installed {}\n", hook_path(&repos.main).display()));
+    let hook = fs::read_to_string(hook_path(&repos.main)).unwrap();
+    assert_contains(&hook, HOOK_MARKER);
+    assert_contains(&hook, "relocate --to \"$PWD\" --relocate-cdb || true");
+    assert_eq!(fs::metadata(hook_path(&repos.main)).unwrap().permissions().mode() & PERMISSION_BITS, HOOK_MODE);
+    assert_eq!(index_shard_names(&repos.worktree).len(), 3);
+    assert!(repos.worktree.join(CDB_RELATIVE_PATH).is_file());
+    assert_eq!(reinstall_run.stdout, format!("updated {}\n", hook_path(&repos.main).display()));
+}
+
+#[test]
+fn installed_hook_ignores_clone() {
+    let repos = empty_repos();
+    create_indexed_repo(&repos.main);
+    run_tool(&repos.main, &["install-hook"]);
+    let hooks_dir = format!("core.hooksPath={}", repos.main.join(".git/hooks").display());
+    let clone = repos.base.join("clone");
+
+    let output = git_output(&repos.base, &["-c", &hooks_dir, "clone", "--quiet", "main", "clone"]);
+
+    // Without the linked-worktree check the hook would run and fail to find a donor for the clone.
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!clone.join(".cache").exists());
+}
+
+#[test]
+fn installed_hook_ignores_branch_switch() {
+    let repos = indexed_repo_with_worktree();
+    run_tool(&repos.main, &["install-hook"]);
+
+    git(&repos.worktree, &["switch", "--quiet", "-c", "other"]);
+
+    assert!(!repos.worktree.join(".cache").exists());
+}
+
+#[test]
+fn install_hook_supports_bare_repository() {
+    let temp = TempDir::new().unwrap();
+    let bare = fs::canonicalize(temp.path()).unwrap().join("bare.git");
+    git(temp.path(), &["init", "--quiet", "--bare", bare.to_str().unwrap()]);
+
+    let run = run_tool(&bare, &["install-hook"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    assert_eq!(run.stdout, format!("installed {}\n", bare.join("hooks/post-checkout").display()));
+}
+
+#[test]
+fn install_hook_keeps_foreign_hook_unless_forced() {
+    let repos = empty_repos();
+    create_committed_repo(&repos.main);
+    fs::write(hook_path(&repos.main), FOREIGN_HOOK).unwrap();
+
+    let refused_run = run_tool(&repos.main, &["install-hook"]);
+    let hook_after_refusal = fs::read_to_string(hook_path(&repos.main)).unwrap();
+    let forced_run = run_tool(&repos.main, &["install-hook", "--force"]);
+
+    assert_eq!(refused_run.exit_code, ERROR_EXIT_CODE);
+    assert_contains(&refused_run.stderr, "--force");
+    assert_eq!(hook_after_refusal, FOREIGN_HOOK);
+    assert_eq!(forced_run.exit_code, SUCCESS_EXIT_CODE, "{}", forced_run.stderr);
+    assert_contains(&fs::read_to_string(hook_path(&repos.main)).unwrap(), HOOK_MARKER);
 }

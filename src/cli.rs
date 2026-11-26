@@ -13,6 +13,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::format::shard::ShardFile;
 use crate::format::shard_contents::decode_shard_contents;
 use crate::format::string_table::TableCompression;
+use crate::hook::{HookInstallRequest, install_hook};
 use crate::index_diff::{IndexDiffRequest, diff_indexes};
 use crate::relocate::path_map::{PathMap, RootMapping, canonical_root_mapping};
 use crate::relocate::worktree_relocation::{WorktreeRelocationRequest, relocate_worktree};
@@ -43,6 +44,8 @@ enum Command {
     Dump(DumpArgs),
     /// Compare two index directories after relocating the first; exit 1 when they differ.
     Diff(DiffArgs),
+    /// Install a post-checkout hook that relocates an index into every new worktree.
+    InstallHook(InstallHookArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +93,19 @@ struct DiffArgs {
     is_ignore_command: bool,
 }
 
+#[derive(Debug, Args)]
+struct InstallHookArgs {
+    /// Any directory of the repository.
+    #[arg(long = "repo", value_name = "PATH", default_value = ".")]
+    repo: PathBuf,
+    /// Make the hook pass --relocate-cdb.
+    #[arg(long = "relocate-cdb")]
+    is_relocate_cdb: bool,
+    /// Replace a post-checkout hook that this tool did not install.
+    #[arg(long = "force")]
+    is_force: bool,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CompressionArg {
     /// zlib level 1.
@@ -128,6 +144,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Relocate(args) => run_relocate(args, &mut stdout),
         Command::Dump(args) => run_dump(&args, &mut stdout),
         Command::Diff(args) => run_diff(args, &mut stdout),
+        Command::InstallHook(args) => run_install_hook(args, &mut stdout),
     }
 }
 
@@ -176,6 +193,14 @@ fn run_diff(args: DiffArgs, out: &mut impl Write) -> Result<ExitCode> {
     write!(out, "{report}")?;
     let exit_code = if report.is_equal() { ExitCode::SUCCESS } else { ExitCode::from(DIFFERENT_EXIT_CODE) };
     Ok(exit_code)
+}
+
+fn run_install_hook(args: InstallHookArgs, out: &mut impl Write) -> Result<ExitCode> {
+    let binary = std::env::current_exe().context("finding this executable's path")?;
+    let report =
+        install_hook(&HookInstallRequest { repo: args.repo, binary, is_relocate_cdb: args.is_relocate_cdb, is_force: args.is_force })?;
+    write!(out, "{report}")?;
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
