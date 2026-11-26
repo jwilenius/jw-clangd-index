@@ -2,4 +2,5 @@
 
 mod atomic_write;
 pub mod format;
+pub mod git;
 pub mod relocate;
