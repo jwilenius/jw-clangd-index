@@ -151,6 +151,20 @@ fn relocate_prints_json_summary() {
 }
 
 #[test]
+fn relocate_json_has_nulls_for_a_given_donor_without_cdb_relocation() {
+    let repos = indexed_repo_with_worktree();
+
+    let run = run_tool(&repos.worktree, &["relocate", "--json", "--from", repos.main.to_str().unwrap()]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(summary["donor_root"], repos.main.to_str().unwrap());
+    assert!(summary["donor_changed_files"].is_null(), "{summary}");
+    assert!(summary["cdb"]["path"].is_null(), "{summary}");
+    assert_eq!(summary["shards"]["relocated"], 3);
+}
+
+#[test]
 fn relocate_dry_run_writes_nothing_and_warns_about_missing_cdb() {
     let repos = indexed_repo_with_worktree();
     fs::write(repos.worktree.join("src/tu0.cpp"), "// changed\n").unwrap();
