@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 
 use super::cdb_relocation::{CDB_RELATIVE_PATHS, CdbOutcome, CdbRelocationRequest, find_cdb, relocate_cdb};
 use super::donor_selection::find_donor;
@@ -62,6 +63,58 @@ pub struct WorktreeRelocationReport {
     /// of the index and holds only once the target has a database.
     pub has_cdb_main_files: bool,
     pub elapsed: Duration,
+}
+
+/// The report as `relocate --json` prints it, with complete path lists where the text summary truncates.
+#[derive(Debug, Serialize)]
+pub struct RelocationSummary<'a> {
+    pub is_dry_run: bool,
+    pub donor_root: &'a Path,
+    /// Files that differ between the donor's and the target's `HEAD`; `None` when the donor was given.
+    pub donor_changed_files: Option<usize>,
+    pub target_root: &'a Path,
+    pub shards: ShardSummary,
+    pub cdb: CdbSummary<'a>,
+    pub reindex: ReindexSummary<'a>,
+    pub elapsed_seconds: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShardSummary {
+    pub relocated: usize,
+    pub kept_existing: usize,
+    pub skipped_deleted: usize,
+    pub skipped_unsupported_version: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CdbSummary<'a> {
+    pub action: CdbAction,
+    /// The database kept or written (or that would be, in a dry run).
+    pub path: Option<&'a Path>,
+}
+
+/// [`CdbOutcome`] without its path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CdbAction {
+    /// `--relocate-cdb` was not given and the target has a database.
+    TargetHasOne,
+    /// `--relocate-cdb` was not given and the target has none, so clangd ignores the index.
+    TargetHasNone,
+    DonorHasNone,
+    KeptExisting,
+    Written,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReindexSummary<'a> {
+    /// False when the prediction holds only once the target has a compilation database.
+    pub has_cdb_main_files: bool,
+    pub reindexed_tus: &'a [PathBuf],
+    pub stale_files: usize,
+    pub main_files_without_shard: &'a [PathBuf],
 }
 
 struct ResolvedDonor {
@@ -343,6 +396,46 @@ fn target_cdb_path(cdb: &CdbOutcome, target_root: &Path) -> Option<PathBuf> {
             find_cdb(target_root).map(|relative_path| target_root.join(relative_path))
         }
         CdbOutcome::NotRequested { is_target_cdb_present: false } | CdbOutcome::DonorCdbMissing => None,
+    }
+}
+
+impl WorktreeRelocationReport {
+    pub fn summary(&self) -> RelocationSummary<'_> {
+        let donor_changed_files = match self.donor_selection {
+            DonorSelection::Explicit => None,
+            DonorSelection::Automatic { changed_files } => Some(changed_files),
+        };
+        RelocationSummary {
+            is_dry_run: self.is_dry_run,
+            donor_root: &self.donor_root,
+            donor_changed_files,
+            target_root: &self.target_root,
+            shards: ShardSummary {
+                relocated: self.index.relocated,
+                kept_existing: self.index.skipped_existing,
+                skipped_deleted: self.index.skipped_deleted,
+                skipped_unsupported_version: self.index.skipped_unsupported_version,
+                failed: self.index.failures.len(),
+            },
+            cdb: summarize_cdb(&self.cdb),
+            reindex: ReindexSummary {
+                has_cdb_main_files: self.has_cdb_main_files,
+                reindexed_tus: &self.prediction.reindexed_tus,
+                stale_files: self.prediction.stale_files,
+                main_files_without_shard: &self.prediction.main_files_without_shard,
+            },
+            elapsed_seconds: self.elapsed.as_secs_f64(),
+        }
+    }
+}
+
+fn summarize_cdb(cdb: &CdbOutcome) -> CdbSummary<'_> {
+    match cdb {
+        CdbOutcome::NotRequested { is_target_cdb_present: true } => CdbSummary { action: CdbAction::TargetHasOne, path: None },
+        CdbOutcome::NotRequested { is_target_cdb_present: false } => CdbSummary { action: CdbAction::TargetHasNone, path: None },
+        CdbOutcome::DonorCdbMissing => CdbSummary { action: CdbAction::DonorHasNone, path: None },
+        CdbOutcome::KeptExisting(path) => CdbSummary { action: CdbAction::KeptExisting, path: Some(path) },
+        CdbOutcome::Written(path) => CdbSummary { action: CdbAction::Written, path: Some(path) },
     }
 }
 

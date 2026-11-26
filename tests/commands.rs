@@ -123,6 +123,34 @@ fn relocate_chooses_donor_skips_deleted_file_and_relocates_cdb() {
 }
 
 #[test]
+fn relocate_prints_json_summary() {
+    let repos = indexed_repo_with_worktree();
+    git(&repos.worktree, &["rm", "--quiet", "include/lib/h0.h"]);
+
+    let run = run_tool(&repos.worktree, &["relocate", "--relocate-cdb", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(summary["is_dry_run"], false);
+    assert_eq!(summary["donor_root"], repos.main.to_str().unwrap());
+    assert_eq!(summary["donor_changed_files"], 0);
+    assert_eq!(summary["target_root"], repos.worktree.to_str().unwrap());
+    let expected_shards = serde_json::json!({
+        "relocated": 2, "kept_existing": 0, "skipped_deleted": 1, "skipped_unsupported_version": 0, "failed": 0
+    });
+    assert_eq!(summary["shards"], expected_shards);
+    assert_eq!(summary["cdb"]["action"], "written");
+    assert_eq!(summary["cdb"]["path"], repos.worktree.join(CDB_RELATIVE_PATH).to_str().unwrap());
+    assert_eq!(summary["reindex"]["has_cdb_main_files"], true);
+    assert_eq!(summary["reindex"]["reindexed_tus"], serde_json::json!([repos.worktree.join("src/tu0.cpp")]));
+    assert!(summary["reindex"]["stale_files"].is_u64(), "{summary}");
+    assert_eq!(summary["reindex"]["main_files_without_shard"], serde_json::json!([]));
+    assert!(summary["elapsed_seconds"].is_f64(), "{summary}");
+    let expected_keys = ["cdb", "donor_changed_files", "donor_root", "elapsed_seconds", "is_dry_run", "reindex", "shards", "target_root"];
+    assert_eq!(summary.as_object().unwrap().keys().collect::<Vec<_>>(), expected_keys);
+}
+
+#[test]
 fn relocate_dry_run_writes_nothing_and_warns_about_missing_cdb() {
     let repos = indexed_repo_with_worktree();
     fs::write(repos.worktree.join("src/tu0.cpp"), "// changed\n").unwrap();

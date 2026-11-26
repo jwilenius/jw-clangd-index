@@ -71,6 +71,9 @@ struct RelocateArgs {
     /// Also copy the donor's compile_commands.json with paths rewritten.
     #[arg(long = "relocate-cdb")]
     is_relocate_cdb: bool,
+    /// Print the summary as JSON.
+    #[arg(long = "json")]
+    is_json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -159,7 +162,13 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
         is_relocate_cdb: args.is_relocate_cdb,
         user_index_dir: user_index_dir(env::var_os(CACHE_HOME_ENV), env::var_os(HOME_ENV)),
     })?;
-    write!(out, "{report}")?;
+    if !args.is_json {
+        write!(out, "{report}")?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Serialized before writing, so a failure leaves stdout empty instead of half a document.
+    let summary = serde_json::to_string_pretty(&report.summary()).context("cannot print the summary as JSON; is a path not UTF-8?")?;
+    writeln!(out, "{summary}")?;
     Ok(ExitCode::SUCCESS)
 }
 
