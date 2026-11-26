@@ -4,17 +4,28 @@ mod common;
 
 use std::collections::HashSet;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::{CDB_RELATIVE_PATH, add_worktree, create_committed_repo, create_indexed_repo, git, isolate_git_env};
-use jw_clangd_index::relocate::index_relocation::INDEX_RELATIVE_DIR;
+use common::{
+    CDB_RELATIVE_PATH, HEADER_SHARD, NO_CACHE_HOME, SAMPLE_ROOT, add_worktree, create_committed_repo, create_indexed_repo, fixture_dir,
+    git, isolate_git_env,
+};
+use jw_clangd_index::format::string_table::TableCompression;
+use jw_clangd_index::relocate::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationRequest, relocate_index};
+use jw_clangd_index::relocate::path_map::{PathMap, RootMapping};
 use tempfile::TempDir;
 
 const SUCCESS_EXIT_CODE: i32 = 0;
 const ERROR_EXIT_CODE: i32 = 2;
 /// Start of the fixture header's shard name, which relocation changes after it.
 const HEADER_SHARD_PREFIX: &str = "h0.h.";
+/// An external header that the fixture TU includes directly and the fixture index has no shard of.
+const EXTERNAL_HEADER: &str = "/usr/include/c++/13/map";
+/// The directory of the fixture header's own includes (`string`, `vector`).
+const EXTERNAL_HEADER_DIR: &str = "/usr/include/c++/13";
+const USER_INDEX_RELATIVE_DIR: &str = "clangd/index";
 
 struct ToolRun {
     exit_code: i32,
@@ -24,8 +35,14 @@ struct ToolRun {
 
 /// Runs the binary in `dir` with git isolated like the fixtures' git.
 fn run_tool(dir: &Path, args: &[&str]) -> ToolRun {
+    run_tool_with_cache_home(dir, args, Path::new(NO_CACHE_HOME))
+}
+
+/// [`run_tool`] with clangd's user index in `cache_home/clangd/index`.
+fn run_tool_with_cache_home(dir: &Path, args: &[&str], cache_home: &Path) -> ToolRun {
     let output = isolate_git_env(Command::new(env!("CARGO_BIN_EXE_jw-clangd-index")).args(args).current_dir(dir))
         .env("RUST_LOG", "info")
+        .env("XDG_CACHE_HOME", cache_home)
         .output()
         .unwrap();
     ToolRun {
@@ -81,6 +98,9 @@ fn relocate_chooses_donor_skips_deleted_file_and_relocates_cdb() {
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     assert_contains(&run.stdout, &format!("donor:    {} (closest worktree, 0 files differ)", repos.main.display()));
     assert_contains(&run.stdout, "2 relocated, 0 kept existing, 1 of deleted files skipped");
+    // The stale count includes the system headers the fixture lacks shards for, which vary by machine.
+    assert_contains(&run.stdout, "reindex:  1 TUs predicted (");
+    assert_contains(&run.stdout, "), 0 CDB entries without a shard\n          src/tu0.cpp\n");
     let shards = index_shard_names(&repos.worktree);
     assert_eq!(shards.len(), 2);
     assert!(shards.iter().all(|name| !name.starts_with(HEADER_SHARD_PREFIX)), "{shards:?}");
@@ -92,6 +112,7 @@ fn relocate_chooses_donor_skips_deleted_file_and_relocates_cdb() {
 #[test]
 fn relocate_dry_run_writes_nothing_and_warns_about_missing_cdb() {
     let repos = indexed_repo_with_worktree();
+    fs::write(repos.worktree.join("src/tu0.cpp"), "// changed\n").unwrap();
 
     let run = run_tool(&repos.base, &["relocate", "--dry-run", "--to", repos.worktree.to_str().unwrap()]);
 
@@ -99,8 +120,59 @@ fn relocate_dry_run_writes_nothing_and_warns_about_missing_cdb() {
     assert_contains(&run.stdout, "dry run: nothing was written\n");
     assert_contains(&run.stdout, "3 relocated");
     assert_contains(&run.stdout, "cdb:      not relocated; target has none\n");
+    assert_contains(&run.stdout, "reindex:  1 TUs predicted once a compile database exists (");
     assert_contains(&run.stderr, "--relocate-cdb");
     assert!(!repos.worktree.join(".cache").exists());
+}
+
+/// The `N` of `N stale files` in a relocation summary.
+fn stale_file_count(stdout: &str) -> usize {
+    let (_, after_count_start) = stdout.split_once("TUs predicted (").expect(stdout);
+    let (count, _) = after_count_start.split_once(" stale files").expect(stdout);
+    count.parse().unwrap()
+}
+
+/// Writes into the user index under `cache_home` a shard of [`EXTERNAL_HEADER`]: the fixture header's,
+/// with its self path mapped to the external header and its includes into `include_dir`.
+fn write_external_header_shard(cache_home: &Path, include_dir: &Path) {
+    let header_path = format!("{SAMPLE_ROOT}/include/lib/h0.h");
+    let header_mapping = RootMapping { old_root: header_path.into_bytes(), new_root: EXTERNAL_HEADER.as_bytes().to_vec() };
+    let include_mapping =
+        RootMapping { old_root: EXTERNAL_HEADER_DIR.as_bytes().to_vec(), new_root: include_dir.as_os_str().as_bytes().to_vec() };
+    let donor_dir = cache_home.join("donor");
+    fs::create_dir_all(&donor_dir).unwrap();
+    fs::copy(fixture_dir().join(HEADER_SHARD), donor_dir.join(HEADER_SHARD)).unwrap();
+    let report = relocate_index(&IndexRelocationRequest {
+        donor_dir,
+        target_dir: cache_home.join(USER_INDEX_RELATIVE_DIR),
+        path_map: PathMap::new(&[header_mapping, include_mapping]).unwrap(),
+        compression: TableCompression::Default,
+        is_overwrite: false,
+        is_dry_run: false,
+        deleted_target_paths: HashSet::new(),
+    })
+    .unwrap();
+    assert_eq!(report.relocated, 1);
+}
+
+#[test]
+fn relocate_reads_shards_of_external_headers_from_user_index() {
+    let repos = indexed_repo_with_worktree();
+    let cache_home = repos.base.join("cache");
+    let include_dir = repos.base.join("external");
+    write_external_header_shard(&cache_home, &include_dir);
+    fs::create_dir_all(&include_dir).unwrap();
+    for header in ["string", "vector"] {
+        fs::write(include_dir.join(header), header).unwrap();
+    }
+    let args = ["relocate", "--dry-run", "--relocate-cdb"];
+
+    let run = run_tool(&repos.worktree, &args);
+    let user_index_run = run_tool_with_cache_home(&repos.worktree, &args, &cache_home);
+
+    assert_eq!(user_index_run.exit_code, SUCCESS_EXIT_CODE, "{}", user_index_run.stderr);
+    // The external header's shard leads the walk to its two readable includes, which have no shard.
+    assert_eq!(stale_file_count(&user_index_run.stdout), stale_file_count(&run.stdout) + 2, "{}", user_index_run.stdout);
 }
 
 #[test]

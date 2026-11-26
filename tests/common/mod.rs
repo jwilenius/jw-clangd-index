@@ -53,6 +53,8 @@ pub fn with_version(bytes: &[u8], version: u32) -> Vec<u8> {
     write_riff(&riff)
 }
 
+/// A cache directory that does not exist, so the binary never reads the user's clangd index of system headers.
+pub const NO_CACHE_HOME: &str = "/nonexistent/cache";
 /// Isolates git from the user's and the system's configuration and fixes commit metadata.
 pub const GIT_ENV: [(&str, &str); 8] = [
     ("GIT_CONFIG_GLOBAL", "/dev/null"),

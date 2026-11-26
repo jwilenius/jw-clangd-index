@@ -1,0 +1,192 @@
+//! The iteration order of an `llvm::StringMap`, which decides the order in which clangd loads the main
+//! files of a compilation database: `JSONCompilationDatabase::getAllFiles` iterates its `IndexByFile`
+//! map, and clangd's broadcast and loader keep that order.
+//!
+//! `llvm/lib/Support/StringMap.cpp` (LLVM 23): open addressing with linear probing over a power-of-two
+//! table that starts with 16 buckets, keyed by the low 32 bits of `xxh3_64bits`; after an insertion
+//! that leaves it more than 3/4 full it doubles, reinserting the entries in bucket order. Iteration
+//! visits the buckets in order.
+
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+use xxhash_rust::xxh3::xxh3_64;
+
+const INITIAL_BUCKETS: usize = 16;
+const GROWTH_FACTOR: usize = 2;
+/// The table grows when `items * MAX_LOAD_DENOMINATOR > buckets * MAX_LOAD_NUMERATOR`.
+const MAX_LOAD_NUMERATOR: usize = 3;
+const MAX_LOAD_DENOMINATOR: usize = 4;
+
+struct Entry {
+    hash: u32,
+    key: PathBuf,
+}
+
+/// `keys` in the order a `StringMap` filled with them in sequence iterates them; a repeated key keeps
+/// its first place.
+pub fn string_map_order(keys: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut buckets: Vec<Option<Entry>> = empty_table(INITIAL_BUCKETS);
+    let mut items = 0;
+    for key in keys {
+        let hash = string_map_hash(&key);
+        let bucket = find_bucket(&buckets, hash, &key);
+        if buckets[bucket].is_some() {
+            continue;
+        }
+        buckets[bucket] = Some(Entry { hash, key });
+        items += 1;
+        let is_overloaded = items * MAX_LOAD_DENOMINATOR > buckets.len() * MAX_LOAD_NUMERATOR;
+        if is_overloaded {
+            buckets = rehash(buckets);
+        }
+    }
+    buckets.into_iter().flatten().map(|entry| entry.key).collect()
+}
+
+/// `StringMapImpl::hash`: `xxh3_64bits` truncated to `uint32_t`.
+fn string_map_hash(key: &Path) -> u32 {
+    xxh3_64(key.as_os_str().as_bytes()) as u32
+}
+
+fn empty_table(size: usize) -> Vec<Option<Entry>> {
+    (0..size).map(|_| None).collect()
+}
+
+/// `LookupBucketFor`: the bucket holding `key`, or the first empty one on its probe sequence.
+fn find_bucket(buckets: &[Option<Entry>], hash: u32, key: &Path) -> usize {
+    let mask = buckets.len() - 1;
+    let mut bucket = hash as usize & mask;
+    while let Some(entry) = &buckets[bucket] {
+        let is_match = entry.hash == hash && entry.key == key;
+        if is_match {
+            return bucket;
+        }
+        bucket = (bucket + 1) & mask;
+    }
+    bucket
+}
+
+/// `RehashTable`: entries move to a table twice the size in their old bucket order.
+fn rehash(buckets: Vec<Option<Entry>>) -> Vec<Option<Entry>> {
+    let mut grown = empty_table(buckets.len() * GROWTH_FACTOR);
+    let mask = grown.len() - 1;
+    for entry in buckets.into_iter().flatten() {
+        let mut bucket = entry.hash as usize & mask;
+        while grown[bucket].is_some() {
+            bucket = (bucket + 1) & mask;
+        }
+        grown[bucket] = Some(entry);
+    }
+    grown
+}
+
+/// Expected order from real LLVM: `llvm-stringmap-order/run.py` in the shared script library builds
+/// `llvm/lib/Support/StringMap.cpp`, `xxhash.cpp` and `Path.cpp` of LLVM 23 (ea7d852a) into a driver
+/// that fills a `StringMap` the way `JSONCompilationDatabase` does.
+#[cfg(test)]
+pub(crate) mod golden {
+    use std::path::PathBuf;
+
+    /// The driver's compilation database directory; its entries are `../src/tu<i>.cpp`,
+    /// `/work/proj/src/./tu<i>.cpp` and `/work/proj/src/tu<i>.cpp` in turn for `i` in `0..ENTRY_COUNT`,
+    /// then `/work/proj/src/tu0.cpp` once more.
+    pub const CDB_DIRECTORY: &str = "/work/proj/build";
+    pub const ENTRY_COUNT: usize = 50;
+    /// The `i` of each [`key`] in iteration order.
+    pub const LLVM_23_ORDER: [usize; ENTRY_COUNT] = [
+        20, 42, 26, 19, 33, 17, 29, 12, 7, 46, 16, 4, 49, 37, 8, 0, 34, 18, 2, 21, 31, 1, 32, 48, 22, 5, 39, 15, 9, 38, 43, 44, 27, 40, 28,
+        35, 25, 36, 14, 3, 24, 6, 11, 47, 23, 45, 10, 13, 30, 41,
+    ];
+
+    /// The `StringMap` key of entry `index`.
+    pub fn key(index: usize) -> PathBuf {
+        PathBuf::from(format!("/work/proj/src/tu{index}.cpp"))
+    }
+
+    /// The `(directory, file)` of the driver's entries.
+    pub fn entries() -> Vec<(String, String)> {
+        let file = |index: usize| match index % 3 {
+            0 => format!("../src/tu{index}.cpp"),
+            1 => format!("/work/proj/src/./tu{index}.cpp"),
+            _ => format!("/work/proj/src/tu{index}.cpp"),
+        };
+        let files = (0..ENTRY_COUNT).map(file).chain(["/work/proj/src/tu0.cpp".to_string()]);
+        files.map(|file| (CDB_DIRECTORY.to_string(), file)).collect()
+    }
+
+    pub fn expected_order() -> Vec<PathBuf> {
+        LLVM_23_ORDER.iter().map(|&index| key(index)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    fn candidates() -> impl Iterator<Item = PathBuf> {
+        (0..).map(|index| PathBuf::from(format!("/p/src/tu{index}.cpp")))
+    }
+
+    fn bucket_of(key: &Path, size: usize) -> usize {
+        string_map_hash(key) as usize & (size - 1)
+    }
+
+    /// `count` keys that each want a different bucket of a 16-bucket table, so none probes.
+    fn keys_in_distinct_buckets(count: usize) -> Vec<PathBuf> {
+        let mut taken: HashSet<usize> = HashSet::new();
+        candidates().filter(|key| taken.insert(bucket_of(key, INITIAL_BUCKETS))).take(count).collect()
+    }
+
+    fn sorted_by_bucket(keys: &[PathBuf], size: usize) -> Vec<PathBuf> {
+        let mut sorted = keys.to_vec();
+        sorted.sort_by_key(|key| bucket_of(key, size));
+        sorted
+    }
+
+    #[test]
+    fn iterates_in_bucket_order_and_keeps_first_of_repeated_keys() {
+        let keys = keys_in_distinct_buckets(5);
+
+        let order = string_map_order([keys.clone(), keys.clone()].concat());
+
+        assert_eq!(order, sorted_by_bucket(&keys, INITIAL_BUCKETS));
+    }
+
+    #[test]
+    fn doubles_table_once_more_than_three_quarters_full() {
+        // 12 of 16 buckets is exactly 3/4; the 13th key doubles the table.
+        let keys = keys_in_distinct_buckets(13);
+
+        assert_eq!(string_map_order(keys[..12].to_vec()), sorted_by_bucket(&keys[..12], INITIAL_BUCKETS));
+        assert_eq!(string_map_order(keys.clone()), sorted_by_bucket(&keys, INITIAL_BUCKETS * GROWTH_FACTOR));
+    }
+
+    #[test]
+    fn probes_colliding_key_into_next_bucket() {
+        let first = candidates().next().unwrap();
+        let colliding = candidates().skip(1).find(|key| bucket_of(key, INITIAL_BUCKETS) == bucket_of(&first, INITIAL_BUCKETS)).unwrap();
+
+        assert_eq!(string_map_order(vec![first.clone(), colliding.clone()]), vec![first.clone(), colliding.clone()]);
+        assert_eq!(string_map_order(vec![colliding.clone(), first.clone()]), vec![colliding, first]);
+    }
+
+    #[test]
+    fn matches_order_of_real_llvm_string_map() {
+        let keys = (0..golden::ENTRY_COUNT).chain([0]).map(golden::key).collect();
+
+        assert_eq!(string_map_order(keys), golden::expected_order());
+    }
+
+    #[test]
+    fn keeps_every_key_of_a_large_map() {
+        let keys: Vec<PathBuf> = candidates().take(5000).collect();
+
+        let order = string_map_order(keys.clone());
+
+        assert_eq!(order.iter().collect::<HashSet<_>>(), keys.iter().collect::<HashSet<_>>());
+        assert_eq!(order.len(), keys.len());
+    }
+}

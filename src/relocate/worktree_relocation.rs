@@ -1,5 +1,5 @@
 //! The `relocate` command: relocates the index of a donor worktree into a target worktree, using git
-//! to choose the donor and skip deleted files.
+//! to choose the donor and skip deleted files, and file digests to predict what clangd reindexes.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -10,16 +10,22 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-use super::cdb_relocation::{CdbOutcome, CdbRelocationRequest, find_cdb, relocate_cdb};
+use super::cdb_relocation::{CDB_RELATIVE_PATHS, CdbOutcome, CdbRelocationRequest, find_cdb, relocate_cdb};
 use super::donor_selection::find_donor;
 use super::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationReport, IndexRelocationRequest, relocate_index};
 use super::path_map::{PathMap, RootMapping};
+use super::reindex_prediction::{
+    IncludeGraph, ReindexPrediction, graph_tus, load_cdb_main_files, load_external_nodes, load_include_graph, load_nested_project_nodes,
+    predict_reindex, without_nested_main_files,
+};
 use crate::format::string_table::TableCompression;
 use crate::git::GitRepo;
 use crate::git::worktree_changes::find_deleted_files;
 
 /// Shard failures logged one by one; the rest are only counted.
 const MAX_LOGGED_FAILURES: usize = 10;
+/// Predicted TUs listed in the summary.
+const MAX_LISTED_TUS: usize = 10;
 
 pub struct WorktreeRelocationRequest {
     /// Donor worktree root; chosen among the repository's worktrees when `None`.
@@ -32,6 +38,9 @@ pub struct WorktreeRelocationRequest {
     pub is_dry_run: bool,
     pub is_overwrite: bool,
     pub is_relocate_cdb: bool,
+    /// clangd's index of the files outside every project (`<cache directory>/clangd/index`), read for
+    /// the prediction; `None` when unknown, so such files count as having no shard.
+    pub user_index_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +57,10 @@ pub struct WorktreeRelocationReport {
     pub is_dry_run: bool,
     pub index: IndexRelocationReport,
     pub cdb: CdbOutcome,
+    pub prediction: ReindexPrediction,
+    /// False when no usable compilation database lists the main files, so the prediction walks the TUs
+    /// of the index and holds only once the target has a database.
+    pub has_cdb_main_files: bool,
     pub elapsed: Duration,
 }
 
@@ -60,6 +73,24 @@ struct ResolvedDonor {
     /// `None` when the donor's `HEAD` is unknown, so git cannot compare it with the target.
     head: Option<String>,
     selection: DonorSelection,
+}
+
+/// A compilation database listing the target's main files, and the mapping its paths still need
+/// (`None` when they are the target's already).
+struct MainFileSource<'a> {
+    cdb_path: PathBuf,
+    path_map: Option<&'a PathMap>,
+}
+
+struct TargetPrediction {
+    reindex: ReindexPrediction,
+    has_cdb_main_files: bool,
+}
+
+/// The main files clangd loads, and whether a compilation database listed them.
+struct MainFiles {
+    paths: Vec<PathBuf>,
+    is_from_cdb: bool,
 }
 
 pub fn relocate_worktree(request: &WorktreeRelocationRequest) -> Result<WorktreeRelocationReport> {
@@ -76,10 +107,11 @@ pub fn relocate_worktree(request: &WorktreeRelocationRequest) -> Result<Worktree
         compression: request.compression,
         is_overwrite: request.is_overwrite,
         is_dry_run: request.is_dry_run,
-        deleted_target_paths: deleted_files,
+        deleted_target_paths: deleted_files.clone(),
     })?;
     warn_about_index(&index, &donor.root);
     let cdb = place_cdb(request, &donor.root, &target_root, &path_map)?;
+    let prediction = predict(request, &donor.root, &target_root, &path_map, &cdb, &deleted_files)?;
 
     Ok(WorktreeRelocationReport {
         donor_root: donor.root,
@@ -88,6 +120,8 @@ pub fn relocate_worktree(request: &WorktreeRelocationRequest) -> Result<Worktree
         is_dry_run: request.is_dry_run,
         index,
         cdb,
+        prediction: prediction.reindex,
+        has_cdb_main_files: prediction.has_cdb_main_files,
         elapsed: started.elapsed(),
     })
 }
@@ -220,6 +254,98 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
     Ok(CdbOutcome::NotRequested { is_target_cdb_present })
 }
 
+fn predict(
+    request: &WorktreeRelocationRequest,
+    donor_root: &Path,
+    target_root: &Path,
+    path_map: &PathMap,
+    cdb: &CdbOutcome,
+    deleted_files: &HashSet<PathBuf>,
+) -> Result<TargetPrediction> {
+    let nested_dirs = nested_project_dirs(target_root, target_cdb_path(cdb, target_root).as_deref());
+    let mut graph = load_target_graph(request.is_dry_run, donor_root, target_root, path_map, deleted_files)?;
+    for nested_dir in &nested_dirs {
+        load_nested_project_nodes(&mut graph, nested_dir)?;
+    }
+    if let Some(user_index_dir) = &request.user_index_dir {
+        let external_nodes = load_external_nodes(&graph, target_root, user_index_dir)?;
+        graph.nodes.extend(external_nodes);
+    }
+    let main_file_source = find_main_file_source(cdb, request.is_dry_run, donor_root, target_root, path_map);
+    let main_files = load_main_files(main_file_source, &graph);
+    let governed_main_files = without_nested_main_files(main_files.paths, &nested_dirs);
+    Ok(TargetPrediction { reindex: predict_reindex(&graph, &governed_main_files), has_cdb_main_files: main_files.is_from_cdb })
+}
+
+/// The main files of `source`, or the TUs of `graph` when there is no usable compilation database.
+fn load_main_files(source: Option<MainFileSource>, graph: &IncludeGraph) -> MainFiles {
+    let Some(source) = source else {
+        return MainFiles { paths: graph_tus(graph), is_from_cdb: false };
+    };
+    match load_cdb_main_files(&source.cdb_path, source.path_map) {
+        Ok(paths) => MainFiles { paths, is_from_cdb: true },
+        Err(error) => {
+            log::warn!("predicting from the TUs in the index instead: {error:#}");
+            MainFiles { paths: graph_tus(graph), is_from_cdb: false }
+        }
+    }
+}
+
+/// The directories under `target_root` that clangd treats as projects of their own: the parents other
+/// than the root of [`CDB_RELATIVE_PATHS`], such as an in-tree `build/`, that hold a compilation
+/// database or will hold `target_cdb_path`.
+fn nested_project_dirs(target_root: &Path, target_cdb_path: Option<&Path>) -> Vec<PathBuf> {
+    let cdb_paths = CDB_RELATIVE_PATHS.iter().map(|relative_path| target_root.join(relative_path));
+    let nested_cdb_paths = cdb_paths.filter(|cdb_path| cdb_path.parent() != Some(target_root));
+    let present_cdb_paths = nested_cdb_paths.filter(|cdb_path| cdb_path.is_file() || Some(cdb_path.as_path()) == target_cdb_path);
+    present_cdb_paths.filter_map(|cdb_path| cdb_path.parent().map(Path::to_path_buf)).collect()
+}
+
+/// After a real run the target's shards form the graph; a dry run wrote none, so the donor's shards
+/// are read with paths mapped instead, leaving out those of deleted files as a real run does.
+fn load_target_graph(
+    is_dry_run: bool,
+    donor_root: &Path,
+    target_root: &Path,
+    path_map: &PathMap,
+    deleted_files: &HashSet<PathBuf>,
+) -> Result<IncludeGraph> {
+    if !is_dry_run {
+        return load_include_graph(&target_root.join(INDEX_RELATIVE_DIR), &PathMap::new(&[])?);
+    }
+    let mut graph = load_include_graph(&donor_root.join(INDEX_RELATIVE_DIR), path_map)?;
+    graph.nodes.retain(|path, _| !deleted_files.contains(path));
+    Ok(graph)
+}
+
+/// The compilation database clangd will read in the target; in a dry run that writes one, the donor's
+/// with paths still to map. `None` when the target has none.
+fn find_main_file_source<'a>(
+    cdb: &CdbOutcome,
+    is_dry_run: bool,
+    donor_root: &Path,
+    target_root: &Path,
+    path_map: &'a PathMap,
+) -> Option<MainFileSource<'a>> {
+    let is_unwritten_cdb = is_dry_run && matches!(cdb, CdbOutcome::Written(_));
+    if is_unwritten_cdb {
+        return find_cdb(donor_root)
+            .map(|relative_path| MainFileSource { cdb_path: donor_root.join(relative_path), path_map: Some(path_map) });
+    }
+    target_cdb_path(cdb, target_root).map(|cdb_path| MainFileSource { cdb_path, path_map: None })
+}
+
+/// The compilation database the target has, or will have once a dry run's database is written.
+fn target_cdb_path(cdb: &CdbOutcome, target_root: &Path) -> Option<PathBuf> {
+    match cdb {
+        CdbOutcome::Written(cdb_path) | CdbOutcome::KeptExisting(cdb_path) => Some(cdb_path.clone()),
+        CdbOutcome::NotRequested { is_target_cdb_present: true } => {
+            find_cdb(target_root).map(|relative_path| target_root.join(relative_path))
+        }
+        CdbOutcome::NotRequested { is_target_cdb_present: false } | CdbOutcome::DonorCdbMissing => None,
+    }
+}
+
 impl fmt::Display for WorktreeRelocationReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_dry_run {
@@ -229,6 +355,7 @@ impl fmt::Display for WorktreeRelocationReport {
         writeln!(formatter, "target:   {}", self.target_root.display())?;
         writeln!(formatter, "shards:   {}", describe_shards(&self.index))?;
         writeln!(formatter, "cdb:      {}", describe_cdb(&self.cdb, self.is_dry_run))?;
+        write_prediction(formatter, &self.prediction, self.has_cdb_main_files, &self.target_root)?;
         writeln!(formatter, "elapsed:  {:.3} s", self.elapsed.as_secs_f64())
     }
 }
@@ -260,4 +387,28 @@ fn describe_cdb(cdb: &CdbOutcome, is_dry_run: bool) -> String {
         CdbOutcome::Written(path) if is_dry_run => format!("would write {}", path.display()),
         CdbOutcome::Written(path) => format!("wrote {}", path.display()),
     }
+}
+
+fn write_prediction(
+    formatter: &mut fmt::Formatter<'_>,
+    prediction: &ReindexPrediction,
+    has_cdb_main_files: bool,
+    target_root: &Path,
+) -> fmt::Result {
+    let condition = if has_cdb_main_files { "" } else { " once a compile database exists" };
+    writeln!(
+        formatter,
+        "reindex:  {} TUs predicted{condition} ({} stale files), {} CDB entries without a shard",
+        prediction.reindexed_tus.len(),
+        prediction.stale_files,
+        prediction.main_files_without_shard.len()
+    )?;
+    for tu in prediction.reindexed_tus.iter().take(MAX_LISTED_TUS) {
+        writeln!(formatter, "          {}", tu.strip_prefix(target_root).unwrap_or(tu).display())?;
+    }
+    let unlisted = prediction.reindexed_tus.len().saturating_sub(MAX_LISTED_TUS);
+    if unlisted > 0 {
+        writeln!(formatter, "          ... and {unlisted} more")?;
+    }
+    Ok(())
 }

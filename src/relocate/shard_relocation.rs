@@ -104,6 +104,13 @@ impl<'a> ShardName<'a> {
     }
 }
 
+/// The include-graph node of the shard's own source file, as found by its donor file name `file_name`;
+/// `None` when no node matches (see [`HashSelfCheckError`]).
+pub fn find_shard_self_node(file_name: &OsStr, shard: &ShardFile) -> Result<Option<IncludeGraphNode>> {
+    let shard_name = ShardName::parse(file_name.as_bytes())?;
+    find_self_node(shard, &shard_name)
+}
+
 /// The node whose path has the file name's basename and hashes to its hex.
 fn find_self_node(shard: &ShardFile, shard_name: &ShardName) -> Result<Option<IncludeGraphNode>> {
     for node in shard.sources()? {

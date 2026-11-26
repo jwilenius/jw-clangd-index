@@ -4,5 +4,7 @@ pub mod cdb_relocation;
 pub mod donor_selection;
 pub mod index_relocation;
 pub mod path_map;
+pub mod reindex_prediction;
 pub mod shard_relocation;
+pub mod string_map_order;
 pub mod worktree_relocation;

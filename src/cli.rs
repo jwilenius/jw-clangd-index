@@ -1,5 +1,7 @@
 //! Command-line interface: argument parsing and the dispatch to each command.
 
+use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +17,12 @@ use crate::relocate::path_map::{RootMapping, canonical_root_mapping};
 use crate::relocate::worktree_relocation::{WorktreeRelocationRequest, relocate_worktree};
 
 const MAPPING_SEPARATOR: char = '=';
+/// clangd's cache directory is `llvm::sys::path::cache_directory`: `$XDG_CACHE_HOME`, else `$HOME/.cache`.
+const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
+const HOME_ENV: &str = "HOME";
+const HOME_CACHE_DIR: &str = ".cache";
+/// Where clangd keeps the shards of files outside every project, relative to the cache directory.
+const USER_INDEX_RELATIVE_DIR: &str = "clangd/index";
 
 /// Relocates a clangd background index between git worktrees by rewriting absolute paths.
 #[derive(Debug, Parser)]
@@ -112,9 +120,22 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
         is_dry_run: args.is_dry_run,
         is_overwrite: args.is_overwrite,
         is_relocate_cdb: args.is_relocate_cdb,
+        user_index_dir: user_index_dir(env::var_os(CACHE_HOME_ENV), env::var_os(HOME_ENV)),
     })?;
     write!(out, "{report}")?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// clangd's user index. Unlike LLVM, an empty variable counts as unset and an unset `HOME` gives
+/// no index instead of falling back to the passwd entry.
+fn user_index_dir(cache_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let is_set = |value: &OsString| !value.is_empty();
+    let cache_dir = match (cache_home.filter(is_set), home.filter(is_set)) {
+        (Some(cache_home), _) => PathBuf::from(cache_home),
+        (None, Some(home)) => Path::new(&home).join(HOME_CACHE_DIR),
+        (None, None) => return None,
+    };
+    Some(cache_dir.join(USER_INDEX_RELATIVE_DIR))
 }
 
 fn run_dump(args: &DumpArgs, out: &mut impl Write) -> Result<ExitCode> {
@@ -141,6 +162,16 @@ mod tests {
         let mapping = parse_root_mapping("/nonexistent/old=/nonexistent/new=x").unwrap();
 
         assert_eq!(mapping, RootMapping { old_root: b"/nonexistent/old".to_vec(), new_root: b"/nonexistent/new=x".to_vec() });
+    }
+
+    #[test]
+    fn finds_user_index_in_xdg_cache_home_before_home() {
+        let cache_home = Some(OsString::from("/xdg"));
+        let home = Some(OsString::from("/home/u"));
+
+        assert_eq!(user_index_dir(cache_home, home.clone()), Some(PathBuf::from("/xdg/clangd/index")));
+        assert_eq!(user_index_dir(Some(OsString::new()), home), Some(PathBuf::from("/home/u/.cache/clangd/index")));
+        assert_eq!(user_index_dir(None, None), None);
     }
 
     #[test]
