@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive"] }
+env_logger = "0.11.12"
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 log = "0.4.35"
 rayon = "1.12.0"

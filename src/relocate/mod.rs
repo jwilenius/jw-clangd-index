@@ -5,3 +5,4 @@ pub mod donor_selection;
 pub mod index_relocation;
 pub mod path_map;
 pub mod shard_relocation;
+pub mod worktree_relocation;
