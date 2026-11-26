@@ -4,4 +4,5 @@ mod atomic_write;
 pub mod cli;
 pub mod format;
 pub mod git;
+pub mod index_diff;
 pub mod relocate;

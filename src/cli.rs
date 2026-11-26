@@ -13,9 +13,12 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::format::shard::ShardFile;
 use crate::format::shard_contents::decode_shard_contents;
 use crate::format::string_table::TableCompression;
-use crate::relocate::path_map::{RootMapping, canonical_root_mapping};
+use crate::index_diff::{IndexDiffRequest, diff_indexes};
+use crate::relocate::path_map::{PathMap, RootMapping, canonical_root_mapping};
 use crate::relocate::worktree_relocation::{WorktreeRelocationRequest, relocate_worktree};
 
+/// `diff` exit code when the indexes differ; equal indexes and other successes exit with 0.
+const DIFFERENT_EXIT_CODE: u8 = 1;
 const MAPPING_SEPARATOR: char = '=';
 /// clangd's cache directory is `llvm::sys::path::cache_directory`: `$XDG_CACHE_HOME`, else `$HOME/.cache`.
 const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
@@ -38,6 +41,8 @@ enum Command {
     Relocate(RelocateArgs),
     /// Print a shard's decoded contents as JSON.
     Dump(DumpArgs),
+    /// Compare two index directories after relocating the first; exit 1 when they differ.
+    Diff(DiffArgs),
 }
 
 #[derive(Debug, Args)]
@@ -69,6 +74,20 @@ struct RelocateArgs {
 struct DumpArgs {
     /// Shard file (`.idx`).
     shard: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct DiffArgs {
+    /// Index directory relocated before comparing (usually the donor's).
+    dir_a: PathBuf,
+    /// Index directory compared as is.
+    dir_b: PathBuf,
+    /// Rewrite paths under OLD to NEW in DIR_A (repeatable).
+    #[arg(long = "map", value_name = "OLD=NEW", value_parser = parse_root_mapping)]
+    mappings: Vec<RootMapping>,
+    /// Ignore differences in the compile commands.
+    #[arg(long = "ignore-command")]
+    is_ignore_command: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -108,6 +127,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Relocate(args) => run_relocate(args, &mut stdout),
         Command::Dump(args) => run_dump(&args, &mut stdout),
+        Command::Diff(args) => run_diff(args, &mut stdout),
     }
 }
 
@@ -144,6 +164,18 @@ fn run_dump(args: &DumpArgs, out: &mut impl Write) -> Result<ExitCode> {
     serde_json::to_writer_pretty(&mut *out, &contents)?;
     writeln!(out)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_diff(args: DiffArgs, out: &mut impl Write) -> Result<ExitCode> {
+    let report = diff_indexes(&IndexDiffRequest {
+        dir_a: args.dir_a,
+        dir_b: args.dir_b,
+        path_map: PathMap::new(&args.mappings)?,
+        is_ignore_command: args.is_ignore_command,
+    })?;
+    write!(out, "{report}")?;
+    let exit_code = if report.is_equal() { ExitCode::SUCCESS } else { ExitCode::from(DIFFERENT_EXIT_CODE) };
+    Ok(exit_code)
 }
 
 #[cfg(test)]

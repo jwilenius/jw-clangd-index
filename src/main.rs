@@ -4,7 +4,7 @@ use clap::Parser;
 use env_logger::{Builder, Env};
 use jw_clangd_index::cli::{Cli, run};
 
-/// Exit code of a fatal error.
+/// Exit code of a fatal error, distinct from `diff`'s "indexes differ".
 const ERROR_EXIT_CODE: u8 = 2;
 
 fn main() -> ExitCode {
