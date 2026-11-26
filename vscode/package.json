@@ -1,0 +1,84 @@
+{
+  "name": "jw-clangd-index",
+  "displayName": "jw-clangd-index",
+  "description": "Relocates a clangd background index into new git worktrees, so clangd reindexes only the changed files.",
+  "version": "0.1.0",
+  "publisher": "jw",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:.git"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Runs git and the jw-clangd-index binary in the workspace folders."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "jwClangdIndex.relocate",
+        "title": "Relocate index",
+        "category": "jw-clangd-index"
+      },
+      {
+        "command": "jwClangdIndex.relocateFrom",
+        "title": "Relocate index from…",
+        "category": "jw-clangd-index"
+      },
+      {
+        "command": "jwClangdIndex.installHook",
+        "title": "Install git hook",
+        "category": "jw-clangd-index"
+      }
+    ],
+    "configuration": {
+      "title": "jw-clangd-index",
+      "properties": {
+        "jwClangdIndex.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path of the `jw-clangd-index` binary. Empty uses the bundled binary, else the one on `PATH`."
+        },
+        "jwClangdIndex.autoRelocate": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Relocate an index into a linked git worktree that opens without one."
+        },
+        "jwClangdIndex.relocateCdb": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Also copy the donor's `compile_commands.json` with paths rewritten (`--relocate-cdb`); clangd ignores the index unless the worktree has a compilation database."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --sourcemap --outfile=dist/extension.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --outDir out && node --test out/test/*.test.js",
+    "vscode:prepublish": "npm run typecheck && npm run build",
+    "package": "node scripts/package.mjs",
+    "format": "prettier --write src test scripts README.md",
+    "format:check": "prettier --check src test scripts README.md"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^4.1.1",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.10.1",
+    "typescript": "^6.0.3"
+  }
+}

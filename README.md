@@ -80,6 +80,12 @@ The hook acts only when git reports a null previous `HEAD` in a linked worktree,
 Branch switches, clones and the first checkout in a main worktree do nothing.
 It runs the absolute path of the installing binary in the foreground and never fails the checkout.
 
+## VS Code extension
+
+`vscode/` holds a thin extension that runs `relocate` when a linked git worktree opens without a clangd index, then restarts clangd so it loads the shards.
+It also offers commands to relocate on demand, from a chosen worktree, and to install the git hook.
+See [vscode/README.md](vscode/README.md) for its settings and how to build the `.vsix`.
+
 ## How it works
 
 Each shard is a RIFF file whose chunks refer to a single string table, so rewriting the table's path strings (raw paths and `file:` URIs, matched only at path boundaries) relocates every symbol, reference and include-graph entry at once, and the shard is renamed after the xxh3 hash of its new path.

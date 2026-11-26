@@ -1,0 +1,156 @@
+import * as path from "node:path";
+
+/** What `relocate` did with the compilation database. */
+const CDB_ACTIONS = ["target_has_one", "target_has_none", "donor_has_none", "kept_existing", "written"] as const;
+export type CdbAction = (typeof CDB_ACTIONS)[number];
+/** Actions after which the target has no compilation database, so clangd ignores the index. */
+const CDB_MISSING_ACTIONS: readonly CdbAction[] = ["target_has_none", "donor_has_none"];
+
+export interface ShardCounts {
+  readonly relocated: number;
+  readonly keptExisting: number;
+  readonly skippedDeleted: number;
+  readonly skippedUnsupportedVersion: number;
+  readonly failed: number;
+}
+
+export interface CdbSummary {
+  readonly action: CdbAction;
+  readonly path: string | undefined;
+}
+
+export interface ReindexSummary {
+  /** False when the prediction holds only once the target has a compilation database. */
+  readonly hasCdbMainFiles: boolean;
+  readonly reindexedTus: readonly string[];
+  readonly staleFiles: number;
+  readonly mainFilesWithoutShard: readonly string[];
+}
+
+/** The summary `jw-clangd-index relocate --json` prints. */
+export interface RelocationSummary {
+  readonly isDryRun: boolean;
+  readonly donorRoot: string;
+  /** `undefined` when the donor was given with `--from`. */
+  readonly donorChangedFiles: number | undefined;
+  readonly targetRoot: string;
+  readonly shards: ShardCounts;
+  readonly cdb: CdbSummary;
+  readonly reindex: ReindexSummary;
+  readonly elapsedSeconds: number;
+}
+
+export class SummaryFormatError extends Error {
+  override readonly name = "SummaryFormatError";
+}
+
+type JsonObject = Readonly<Record<string, unknown>>;
+
+/** @throws SyntaxError when `text` is not JSON, {@link SummaryFormatError} when a field is missing or mistyped. */
+export function parseRelocationSummary(text: string): RelocationSummary {
+  const summary = asObject(JSON.parse(text), "summary");
+  return {
+    isDryRun: readBoolean(summary, "is_dry_run"),
+    donorRoot: readString(summary, "donor_root"),
+    donorChangedFiles: readOptionalNumber(summary, "donor_changed_files"),
+    targetRoot: readString(summary, "target_root"),
+    shards: parseShardCounts(asObject(summary["shards"], "shards")),
+    cdb: parseCdbSummary(asObject(summary["cdb"], "cdb")),
+    reindex: parseReindexSummary(asObject(summary["reindex"], "reindex")),
+    elapsedSeconds: readNumber(summary, "elapsed_seconds"),
+  };
+}
+
+function parseShardCounts(shards: JsonObject): ShardCounts {
+  return {
+    relocated: readNumber(shards, "relocated"),
+    keptExisting: readNumber(shards, "kept_existing"),
+    skippedDeleted: readNumber(shards, "skipped_deleted"),
+    skippedUnsupportedVersion: readNumber(shards, "skipped_unsupported_version"),
+    failed: readNumber(shards, "failed"),
+  };
+}
+
+function parseCdbSummary(cdb: JsonObject): CdbSummary {
+  const action = readString(cdb, "action");
+  if (!isCdbAction(action)) {
+    throw new SummaryFormatError(`unknown cdb.action ${JSON.stringify(action)}`);
+  }
+  const cdbPath = cdb["path"];
+  if (cdbPath !== null && typeof cdbPath !== "string") {
+    throw new SummaryFormatError("cdb.path is neither a string nor null");
+  }
+  return { action, path: cdbPath ?? undefined };
+}
+
+function isCdbAction(action: string): action is CdbAction {
+  return (CDB_ACTIONS as readonly string[]).includes(action);
+}
+
+function parseReindexSummary(reindex: JsonObject): ReindexSummary {
+  return {
+    hasCdbMainFiles: readBoolean(reindex, "has_cdb_main_files"),
+    reindexedTus: readStringArray(reindex, "reindexed_tus"),
+    staleFiles: readNumber(reindex, "stale_files"),
+    mainFilesWithoutShard: readStringArray(reindex, "main_files_without_shard"),
+  };
+}
+
+function asObject(value: unknown, name: string): JsonObject {
+  const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isObject) {
+    throw new SummaryFormatError(`${name} is not an object`);
+  }
+  return value as JsonObject;
+}
+
+function readString(object: JsonObject, key: string): string {
+  const value = object[key];
+  if (typeof value !== "string") {
+    throw new SummaryFormatError(`${key} is not a string`);
+  }
+  return value;
+}
+
+function readNumber(object: JsonObject, key: string): number {
+  const value = object[key];
+  if (typeof value !== "number") {
+    throw new SummaryFormatError(`${key} is not a number`);
+  }
+  return value;
+}
+
+function readOptionalNumber(object: JsonObject, key: string): number | undefined {
+  return object[key] === null ? undefined : readNumber(object, key);
+}
+
+function readBoolean(object: JsonObject, key: string): boolean {
+  const value = object[key];
+  if (typeof value !== "boolean") {
+    throw new SummaryFormatError(`${key} is not a boolean`);
+  }
+  return value;
+}
+
+function readStringArray(object: JsonObject, key: string): string[] {
+  const value = object[key];
+  const isStringArray = Array.isArray(value) && value.every((item) => typeof item === "string");
+  if (!isStringArray) {
+    throw new SummaryFormatError(`${key} is not an array of strings`);
+  }
+  return value;
+}
+
+/** One line for a notification, such as `relocated 9876 shards from main (12 kept); 3 TUs to reindex`. */
+export function describeRelocation(summary: RelocationSummary): string {
+  const { shards } = summary;
+  const verb = summary.isDryRun ? "would relocate" : "relocated";
+  const keptAndFailed = `${shards.keptExisting} kept, ${shards.failed} failed`;
+  const reindex = `${summary.reindex.reindexedTus.length} TUs to reindex`;
+  const cdbWarning = isCdbMissing(summary.cdb.action) ? "; no compile_commands.json, so clangd ignores the index" : "";
+  return `${verb} ${shards.relocated} shards from ${path.basename(summary.donorRoot)} (${keptAndFailed}); ${reindex}${cdbWarning}`;
+}
+
+function isCdbMissing(action: CdbAction): boolean {
+  return CDB_MISSING_ACTIONS.includes(action);
+}
