@@ -1,0 +1,6 @@
+/target
+/vscode/node_modules
+/vscode/dist
+/vscode/out
+/vscode/bin
+*.vsix
