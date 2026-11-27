@@ -14,6 +14,8 @@ use porcelain::{FileChange, WorktreeEntry, parse_name_status, parse_path_list, p
 
 /// `git config --get` exits with this code when the key is not set.
 const CONFIG_KEY_MISSING_EXIT_CODE: i32 = 1;
+/// `git ls-files --error-unmatch` exits with this code when the index lacks the path.
+const PATH_UNTRACKED_EXIT_CODE: i32 = 1;
 /// Variables git exports to hooks that point a git command at a repository, index or configuration
 /// regardless of `-C`; removed so every command reads the repository of its own directory.
 pub const REPOSITORY_ENV_VARS: [&str; 11] = [
@@ -80,6 +82,18 @@ impl GitRepo {
     /// Tracked files whose working-tree state (staged or not) differs from commit `base`.
     pub fn working_tree_changes(&self, base: &str) -> Result<Vec<FileChange>> {
         parse_name_status(&self.run(&["diff", "--name-status", "-z", "--no-renames", base])?)
+    }
+
+    /// Whether the index tracks the file at `path`, absolute or relative to the directory.
+    pub fn is_tracked(&self, path: &Path) -> Result<bool> {
+        let path = path.to_str().with_context(|| format!("{} is not UTF-8", path.display()))?;
+        let args = ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", path];
+        let output = self.output(&args)?;
+        if output.status.code() == Some(PATH_UNTRACKED_EXIT_CODE) {
+            return Ok(false);
+        }
+        self.checked(&args, output)?;
+        Ok(true)
     }
 
     fn run(&self, args: &[&str]) -> Result<Vec<u8>> {

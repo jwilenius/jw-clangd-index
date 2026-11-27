@@ -1,7 +1,15 @@
 import * as path from "node:path";
 
 /** What `relocate` did with the compilation database. */
-const CDB_ACTIONS = ["target_has_one", "target_has_none", "donor_has_none", "kept_existing", "written", "skipped_link"] as const;
+const CDB_ACTIONS = [
+  "target_has_one",
+  "target_has_none",
+  "donor_has_none",
+  "kept_existing",
+  "written",
+  "kept_tracked",
+  "skipped_link",
+] as const;
 export type CdbAction = (typeof CDB_ACTIONS)[number];
 /** Actions after which the target has no compilation database, so clangd ignores the index. */
 const CDB_MISSING_ACTIONS: readonly CdbAction[] = ["target_has_none", "donor_has_none"];
@@ -17,6 +25,8 @@ export interface ShardCounts {
 export interface CdbSummary {
   readonly action: CdbAction;
   readonly path: string | undefined;
+  /** Why the database was not written, for `kept_tracked` and `skipped_link`. */
+  readonly reason: string | undefined;
 }
 
 export interface ReindexSummary {
@@ -76,11 +86,7 @@ function parseCdbSummary(cdb: JsonObject): CdbSummary {
   if (!isCdbAction(action)) {
     throw new SummaryFormatError(`unknown cdb.action ${JSON.stringify(action)}`);
   }
-  const cdbPath = cdb["path"];
-  if (cdbPath !== null && typeof cdbPath !== "string") {
-    throw new SummaryFormatError("cdb.path is neither a string nor null");
-  }
-  return { action, path: cdbPath ?? undefined };
+  return { action, path: readOptionalString(cdb, "path"), reason: readOptionalString(cdb, "reason") };
 }
 
 function isCdbAction(action: string): action is CdbAction {
@@ -110,6 +116,14 @@ function readString(object: JsonObject, key: string): string {
     throw new SummaryFormatError(`${key} is not a string`);
   }
   return value;
+}
+
+function readOptionalString(object: JsonObject, key: string): string | undefined {
+  const value = object[key];
+  if (value !== null && typeof value !== "string") {
+    throw new SummaryFormatError(`${key} is neither a string nor null`);
+  }
+  return value ?? undefined;
 }
 
 function readNumber(object: JsonObject, key: string): number {
@@ -154,6 +168,9 @@ export function describeRelocation(summary: RelocationSummary): string {
 function describeCdbWarning(action: CdbAction): string {
   if (CDB_MISSING_ACTIONS.includes(action)) {
     return "; no compile_commands.json, so clangd ignores the index";
+  }
+  if (action === "kept_tracked") {
+    return "; git tracks compile_commands.json, so it was not replaced";
   }
   if (action === "skipped_link") {
     return "; compile_commands.json links outside the worktree, so it was not replaced";

@@ -8,11 +8,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
 use serde_json::Value;
 
 use super::path_map::PathMap;
 use crate::atomic_write::{WriteOutcome, write_atomically, write_unless_exists};
+use crate::git::GitRepo;
 
 /// Where clangd looks for a compilation database inside a directory, in its search order.
 pub const CDB_RELATIVE_PATHS: [&str; 2] = ["compile_commands.json", "build/compile_commands.json"];
@@ -30,6 +30,8 @@ pub enum CdbOutcome {
     KeptExisting(PathBuf),
     /// Written to this path (or would be, in a dry run).
     Written(PathBuf),
+    /// Not written, since git tracks the file at this path, which the write would modify.
+    KeptTracked(PathBuf),
     /// Not written, since `link` leads where this tool must not write; the link is kept as it is.
     SkippedLink {
         link: PathBuf,
@@ -38,8 +40,7 @@ pub enum CdbOutcome {
 }
 
 /// Why the target's database path is not written through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkSkipReason {
     /// It leads to the donor's own database, which the write would replace.
     PointsAtDonorCdb,
@@ -48,6 +49,17 @@ pub enum LinkSkipReason {
     /// It leads outside the target root, or to where that cannot be told, such as through a dangling
     /// directory symlink.
     LeavesTarget,
+}
+
+impl LinkSkipReason {
+    /// The reason as `relocate --json` prints it.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::PointsAtDonorCdb => "points_at_donor_cdb",
+            Self::PointsIntoDonor => "points_into_donor",
+            Self::LeavesTarget => "leaves_target",
+        }
+    }
 }
 
 pub struct CdbRelocationRequest<'a> {
@@ -72,7 +84,8 @@ fn is_readable_file(path: &Path) -> bool {
 ///
 /// When that path is a symlink, often a tracked one into the build directory, the database is written
 /// where the symlink points, so the symlink stays and a dangling one starts to resolve. A path that
-/// leads to the donor's database, into the donor or outside the target is not written at all.
+/// leads to the donor's database, into the donor or outside the target is not written at all, nor is a
+/// file git tracks, which the write would modify.
 pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     let Some(donor_relative_path) = find_cdb(request.donor_root) else {
         return Ok(CdbOutcome::DonorCdbMissing);
@@ -88,6 +101,9 @@ pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     let target_cdb = resolve_symlinks(&target_link)?;
     if let Some(reason) = find_link_skip_reason(&target_cdb, &donor_cdb, request)? {
         return Ok(CdbOutcome::SkippedLink { link: target_link, reason });
+    }
+    if is_tracked_in_target(&target_cdb, request.target_root) {
+        return Ok(CdbOutcome::KeptTracked(target_cdb));
     }
 
     let json = fs::read(&donor_cdb).with_context(|| format!("reading {}", donor_cdb.display()))?;
@@ -170,6 +186,17 @@ fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, request: &CdbReloc
         return Ok(Some(LinkSkipReason::PointsIntoDonor));
     }
     Ok(None)
+}
+
+/// A target outside git, or a path git cannot answer for, counts as untracked.
+fn is_tracked_in_target(target_cdb: &Path, target_root: &Path) -> bool {
+    match GitRepo::new(target_root).is_tracked(target_cdb) {
+        Ok(is_tracked) => is_tracked,
+        Err(error) => {
+            log::debug!("treating {} as untracked: {error:#}", target_cdb.display());
+            false
+        }
+    }
 }
 
 fn canonicalize_root(root: &Path) -> Result<PathBuf> {

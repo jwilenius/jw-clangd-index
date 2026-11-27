@@ -188,6 +188,25 @@ fn relocate_replaces_existing_shards_and_cdb_unless_keep_existing() {
 }
 
 #[test]
+fn relocate_keeps_cdb_that_git_tracks() {
+    let repos = indexed_repo_with_worktree();
+    let target_cdb = repos.worktree.join(CDB_RELATIVE_PATH);
+    fs::create_dir_all(target_cdb.parent().unwrap()).unwrap();
+    fs::write(&target_cdb, "[]\n").unwrap();
+    git(&repos.worktree, &["add", "--force", CDB_RELATIVE_PATH]);
+    git(&repos.worktree, &["commit", "--quiet", "-m", "track the cdb"]);
+
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    let expected_cdb = serde_json::json!({ "action": "kept_tracked", "path": target_cdb, "reason": "tracked_by_git" });
+    assert_eq!(summary["cdb"], expected_cdb);
+    assert_eq!(fs::read_to_string(&target_cdb).unwrap(), "[]\n");
+    assert_contains(&run.stderr, "git tracks");
+}
+
+#[test]
 fn relocate_never_writes_through_link_to_donor_cdb() {
     let repos = indexed_repo_with_worktree();
     let donor_cdb = repos.main.join(CDB_RELATIVE_PATH);

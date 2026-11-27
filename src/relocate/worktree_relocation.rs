@@ -93,8 +93,9 @@ pub struct CdbSummary<'a> {
     pub action: CdbAction,
     /// The database kept or written (or that would be, in a dry run), or the link skipped.
     pub path: Option<&'a Path>,
-    /// Why the link was skipped; `None` for the other actions.
-    pub reason: Option<LinkSkipReason>,
+    /// Why the link was skipped (a [`LinkSkipReason::code`]) or the database kept as git tracks it;
+    /// `None` for the other actions.
+    pub reason: Option<&'a str>,
 }
 
 /// [`CdbOutcome`] without its path.
@@ -108,8 +109,13 @@ pub enum CdbAction {
     DonorHasNone,
     KeptExisting,
     Written,
+    /// Not written, since git tracks the target's database.
+    KeptTracked,
     SkippedLink,
 }
+
+/// The [`CdbSummary::reason`] of [`CdbAction::KeptTracked`].
+const TRACKED_REASON: &str = "tracked_by_git";
 
 #[derive(Debug, Serialize)]
 pub struct ReindexSummary<'a> {
@@ -319,6 +325,9 @@ fn warn_about_cdb(outcome: &CdbOutcome) {
                 describe_skip_reason(*reason)
             )
         }
+        CdbOutcome::KeptTracked(path) => {
+            log::warn!("git tracks {}, so the relocated compile_commands.json does not replace it", path.display())
+        }
         CdbOutcome::NotRequested { .. } | CdbOutcome::KeptExisting(_) | CdbOutcome::Written(_) => {}
     }
 }
@@ -408,7 +417,7 @@ fn find_main_file_source<'a>(
 fn target_cdb_path(cdb: &CdbOutcome, target_root: &Path) -> Option<PathBuf> {
     match cdb {
         CdbOutcome::Written(cdb_path) | CdbOutcome::KeptExisting(cdb_path) => Some(cdb_path.clone()),
-        CdbOutcome::NotRequested { is_target_cdb_present: true } | CdbOutcome::SkippedLink { .. } => {
+        CdbOutcome::NotRequested { is_target_cdb_present: true } | CdbOutcome::SkippedLink { .. } | CdbOutcome::KeptTracked(_) => {
             find_cdb(target_root).map(|relative_path| target_root.join(relative_path))
         }
         CdbOutcome::NotRequested { is_target_cdb_present: false } | CdbOutcome::DonorCdbMissing => None,
@@ -456,7 +465,10 @@ fn summarize_cdb(cdb: &CdbOutcome) -> CdbSummary<'_> {
         CdbOutcome::DonorCdbMissing => CdbSummary { action: CdbAction::DonorHasNone, path: None, reason: None },
         CdbOutcome::KeptExisting(path) => CdbSummary { action: CdbAction::KeptExisting, path: Some(path), reason: None },
         CdbOutcome::Written(path) => CdbSummary { action: CdbAction::Written, path: Some(path), reason: None },
-        CdbOutcome::SkippedLink { link, reason } => CdbSummary { action: CdbAction::SkippedLink, path: Some(link), reason: Some(*reason) },
+        CdbOutcome::KeptTracked(path) => CdbSummary { action: CdbAction::KeptTracked, path: Some(path), reason: Some(TRACKED_REASON) },
+        CdbOutcome::SkippedLink { link, reason } => {
+            CdbSummary { action: CdbAction::SkippedLink, path: Some(link), reason: Some(reason.code()) }
+        }
     }
 }
 
@@ -500,6 +512,7 @@ fn describe_cdb(cdb: &CdbOutcome, is_dry_run: bool) -> String {
         CdbOutcome::KeptExisting(path) => format!("kept existing {}", path.display()),
         CdbOutcome::Written(path) if is_dry_run => format!("would write {}", path.display()),
         CdbOutcome::Written(path) => format!("wrote {}", path.display()),
+        CdbOutcome::KeptTracked(path) => format!("kept {}, which git tracks", path.display()),
         CdbOutcome::SkippedLink { link, reason } => format!("not written: {} {}", link.display(), describe_skip_reason(*reason)),
     }
 }

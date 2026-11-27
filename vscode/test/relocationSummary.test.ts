@@ -36,7 +36,7 @@ const SUMMARY: RelocationSummary = {
   donorChangedFiles: 4,
   targetRoot: "/work/feature",
   shards: { relocated: 9876, keptExisting: 12, skippedDeleted: 1, skippedUnsupportedVersion: 0, failed: 2 },
-  cdb: { action: "written", path: "/work/feature/compile_commands.json" },
+  cdb: { action: "written", path: "/work/feature/compile_commands.json", reason: undefined },
   reindex: {
     hasCdbMainFiles: true,
     reindexedTus: ["/work/feature/src/a.cpp", "/work/feature/src/b.cpp"],
@@ -61,13 +61,21 @@ describe("parseRelocationSummary", () => {
     assert.deepEqual(summary, SUMMARY);
   });
 
-  it("maps null donor_changed_files and cdb.path to undefined", () => {
-    const json = withField(["cdb"], { action: "donor_has_none", path: null });
+  it("maps null donor_changed_files, cdb.path and cdb.reason to undefined", () => {
+    const json = withField(["cdb"], { action: "donor_has_none", path: null, reason: null });
 
     const summary = parseRelocationSummary(withField(["donor_changed_files"], null, json));
 
     assert.equal(summary.donorChangedFiles, undefined);
-    assert.deepEqual(summary.cdb, { action: "donor_has_none", path: undefined });
+    assert.deepEqual(summary.cdb, { action: "donor_has_none", path: undefined, reason: undefined });
+  });
+
+  it("reads the reason a tracked compilation database was kept", () => {
+    const tracked = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" };
+
+    const summary = parseRelocationSummary(withField(["cdb"], tracked));
+
+    assert.deepEqual(summary.cdb, { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" });
   });
 
   it("rejects a missing field", () => {
@@ -97,14 +105,21 @@ describe("describeRelocation", () => {
   });
 
   it("warns when the target has no compilation database", () => {
-    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "target_has_none", path: undefined } };
+    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "target_has_none", path: undefined, reason: undefined } };
 
     assert.match(describeRelocation(summary), /; no compile_commands.json, so clangd ignores the index$/);
   });
 
   it("warns when the compilation database links outside the worktree", () => {
-    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "skipped_link", path: "/work/feature/compile_commands.json" } };
+    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "leaves_target" } as const;
+    const summary: RelocationSummary = { ...SUMMARY, cdb };
 
     assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so it was not replaced$/);
+  });
+
+  it("warns when git tracks the compilation database", () => {
+    const cdb = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" } as const;
+
+    assert.match(describeRelocation({ ...SUMMARY, cdb }), /; git tracks compile_commands.json, so it was not replaced$/);
   });
 });
