@@ -7,8 +7,10 @@ use super::digest::FileDigest;
 use super::riff::{FourCc, RiffFile, parse_riff, write_riff};
 use super::string_table::{StringTable, TableCompression, decode_string_table, encode_string_table};
 
-/// Format versions this tool was verified against: 20 (clangd 23.1 release) and 21 (adds `Symbol::Tags`).
-pub const SUPPORTED_VERSIONS: [u32; 2] = [20, 21];
+/// Format versions this tool was verified against: 19 (clangd 18 and 19), 20 (clangd 20 to 23) and 21
+/// (llvm main, adds `Symbol::Tags`). 19 and 20 share one layout; 20 only adds new `RefKind` and symbol
+/// flag bits.
+pub const SUPPORTED_VERSIONS: [u32; 3] = [19, 20, 21];
 /// First version that serializes `Symbol::Tags`.
 pub const TAGS_VERSION: u32 = 21;
 

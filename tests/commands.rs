@@ -29,7 +29,7 @@ const PERMISSION_BITS: u32 = 0o777;
 /// Start of the fixture header's shard name, which relocation changes after it.
 const HEADER_SHARD_PREFIX: &str = "h0.h.";
 /// A format version this tool cannot decode.
-const UNSUPPORTED_VERSION: u32 = 19;
+const UNSUPPORTED_VERSION: u32 = 18;
 /// An external header that the fixture TU includes directly and the fixture index has no shard of.
 const EXTERNAL_HEADER: &str = "/usr/include/c++/13/map";
 /// The directory of the fixture header's own includes (`string`, `vector`).
@@ -380,8 +380,11 @@ fn diff_skips_shards_of_unsupported_version() {
     let run = run_tool(temp.path(), &["diff", dir_a.to_str().unwrap(), dir_b.to_str().unwrap(), "--map", &map]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}{}", run.stdout, run.stderr);
-    assert_contains(&run.stdout, &format!("skipped:   {} (unsupported format version 19)\n", dir_a.join(HEADER_SHARD).display()));
-    assert_contains(&run.stdout, &format!("skipped:   {} (unsupported format version 19)\n", header_shard_b.display()));
+    assert_contains(
+        &run.stdout,
+        &format!("skipped:   {} (unsupported format version {UNSUPPORTED_VERSION})\n", dir_a.join(HEADER_SHARD).display()),
+    );
+    assert_contains(&run.stdout, &format!("skipped:   {} (unsupported format version {UNSUPPORTED_VERSION})\n", header_shard_b.display()));
     assert_contains(&run.stdout, "indexes are equal: 2 shards compared");
 }
 

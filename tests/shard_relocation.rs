@@ -16,7 +16,7 @@ use jw_clangd_index::relocate::shard_relocation::{HashSelfCheckError, Unsupporte
 const MOVED_ROOT: &str = "/work/my proj+wt";
 const MOVED_ROOT_URI: &str = "file:///work/my%20proj%2Bwt/";
 const CLANGD_23_VERSION: u32 = 20;
-const UNSUPPORTED_VERSION: u32 = 19;
+const UNSUPPORTED_VERSION: u32 = 18;
 /// Needs two varint bytes, so a misplaced insert shifts every later field.
 const SYNTHETIC_TAGS: u32 = 0x1234;
 

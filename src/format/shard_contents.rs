@@ -1,7 +1,7 @@
 //! Full decode of a shard into resolved, comparable values, for `dump` and `diff`.
 //!
 //! Field order follows `readSymbol`, `readRefs`, `readRelation`, `readIncludeGraphNode` and
-//! `readCompileCommand` in `clangd/index/Serialization.cpp` (format versions 20 and 21).
+//! `readCompileCommand` in `clangd/index/Serialization.cpp` (format versions 19, 20 and 21).
 
 use anyhow::{Context, Result};
 use serde::Serialize;
