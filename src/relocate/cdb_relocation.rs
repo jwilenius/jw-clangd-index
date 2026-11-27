@@ -217,6 +217,14 @@ mod tests {
         fs::write(donor_root.join("build/compile_commands.json"), serde_json::to_vec(&cdb).unwrap()).unwrap();
     }
 
+    /// The root `compile_commands.json` of `root` as a relative symlink into `build/`, as a tracked one is.
+    fn link_root_cdb_into_build(root: &Path) -> PathBuf {
+        let root_link = root.join("compile_commands.json");
+        fs::create_dir_all(root).unwrap();
+        std::os::unix::fs::symlink("build/compile_commands.json", &root_link).unwrap();
+        root_link
+    }
+
     #[test]
     fn rewrites_arguments_form() {
         let cdb = json!([{
@@ -271,15 +279,14 @@ mod tests {
         let donor_root = temp.path().join("donor");
         let target_root = temp.path().join("target");
         write_donor_cdb(&donor_root);
-        fs::create_dir_all(&target_root).unwrap();
-        let target_link = target_root.join("compile_commands.json");
-        std::os::unix::fs::symlink("build/compile_commands.json", &target_link).unwrap();
+        link_root_cdb_into_build(&donor_root);
+        let target_link = link_root_cdb_into_build(&target_root);
         let path_map = path_map();
         let request = CdbRelocationRequest {
             donor_root: &donor_root,
             target_root: &target_root,
             path_map: &path_map,
-            is_overwrite: false,
+            is_overwrite: true,
             is_dry_run: false,
         };
 
