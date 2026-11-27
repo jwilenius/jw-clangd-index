@@ -1,7 +1,7 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { classifyFolder, decideAutoRelocation, isClangdRestartNeeded } from "../src/relocationPolicy";
+import { classifyFolder, decideAutoRelocation, decideCommandTarget, isClangdRestartNeeded } from "../src/relocationPolicy";
 import type { RelocationSummary } from "../src/relocationSummary";
 
 const LINKED_LOCATION = { toplevel: "/work/feature", gitDir: "/work/main/.git/worktrees/feature", commonDir: "/work/main/.git" };
@@ -36,6 +36,28 @@ describe("classifyFolder", () => {
 
   it("finds a folder outside git", () => {
     assert.equal(classifyFolder("/tmp", undefined), "notInGit");
+  });
+});
+
+describe("decideCommandTarget", () => {
+  it("relocates into a worktree root as picked", () => {
+    assert.deepEqual(decideCommandTarget("/work/feature", LINKED_LOCATION), { kind: "relocate", root: "/work/feature", note: undefined });
+    assert.deepEqual(decideCommandTarget("/work/main", MAIN_LOCATION), { kind: "relocate", root: "/work/main", note: undefined });
+  });
+
+  it("relocates into the root of the worktree a folder is inside, and says so", () => {
+    assert.deepEqual(decideCommandTarget("/work/feature/src", LINKED_LOCATION), {
+      kind: "relocate",
+      root: "/work/feature",
+      note: "/work/feature/src is inside the worktree /work/feature, so the index is relocated into /work/feature",
+    });
+  });
+
+  it("refuses a folder outside git", () => {
+    assert.deepEqual(decideCommandTarget("/tmp", undefined), {
+      kind: "refused",
+      message: "/tmp is not in a git worktree, so it has no index to relocate into",
+    });
   });
 });
 

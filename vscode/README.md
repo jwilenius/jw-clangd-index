@@ -39,6 +39,7 @@ The hook stores the absolute path of the binary that installed it.
 VS Code deletes the bundled binary's versioned extension directory on update, so after installing with the bundled binary the command warns; set `jwClangdIndex.path` to a lasting binary and install again.
 
 With several workspace folders, each command first asks for the folder.
+The relocate commands relocate into the root of the worktree that holds the folder, and say so when that is not the folder itself; they refuse a folder outside git with a warning.
 The commands report success in a notification.
 
 ## Settings

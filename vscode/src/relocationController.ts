@@ -7,7 +7,13 @@ import { buildInstallHookArguments, buildRelocateArguments } from "./cliArgument
 import { findCliFailure, interpretRelocationRun, type RelocationResult } from "./cliResult";
 import { describeCheckout, selectDonorWorktrees, type WorktreeEntry } from "./gitWorktree";
 import { type ProcessResult, runProcess } from "./processRunner";
-import { type AutoRelocationDecision, classifyFolder, decideAutoRelocation, isClangdRestartNeeded } from "./relocationPolicy";
+import {
+  type AutoRelocationDecision,
+  classifyFolder,
+  decideAutoRelocation,
+  decideCommandTarget,
+  isClangdRestartNeeded,
+} from "./relocationPolicy";
 import { describeRelocation, describeRelocationProblems } from "./relocationSummary";
 import { countIndexShards, countLargestDonorIndex, listWorktrees, readGitLocation, resolveRealPath } from "./worktreeProbe";
 
@@ -89,7 +95,10 @@ export class RelocationController {
     if (folder === undefined) {
       return;
     }
-    await this.relocate(folder, await resolveRealPath(folder.uri.fsPath), undefined, "command");
+    const root = await this.resolveCommandTarget(folder);
+    if (root !== undefined) {
+      await this.relocate(folder, root, undefined, "command");
+    }
   }
 
   async relocateFromCommand(): Promise<void> {
@@ -97,12 +106,33 @@ export class RelocationController {
     if (folder === undefined) {
       return;
     }
-    const root = await resolveRealPath(folder.uri.fsPath);
+    const root = await this.resolveCommandTarget(folder);
+    if (root === undefined) {
+      return;
+    }
     const donor = await pickDonor(root);
     if (donor === undefined) {
       return;
     }
     await this.relocate(folder, root, donor.path, "command");
+  }
+
+  /** The worktree root to relocate `folder` into, after telling the user when it is not `folder`; `undefined` when there is none. */
+  private async resolveCommandTarget(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+    const folderRoot = await resolveRealPath(folder.uri.fsPath);
+    const target = decideCommandTarget(folderRoot, await readGitLocation(folderRoot));
+    if (target.kind === "refused") {
+      const message = `${MESSAGE_PREFIX}: ${target.message}`;
+      this.log.warn(message);
+      void vscode.window.showWarningMessage(message);
+      return undefined;
+    }
+    if (target.note !== undefined) {
+      const message = `${MESSAGE_PREFIX}: ${target.note}`;
+      this.log.info(message);
+      void vscode.window.showInformationMessage(message);
+    }
+    return target.root;
   }
 
   async installHookCommand(): Promise<void> {
