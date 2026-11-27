@@ -123,6 +123,22 @@ fn relocate_chooses_donor_skips_deleted_file_and_relocates_cdb() {
 }
 
 #[test]
+fn relocate_keeps_shard_of_ignored_file_removed_only_from_index() {
+    let repos = indexed_repo_with_worktree();
+    let gitignore = repos.worktree.join(".gitignore");
+    let ignored = fs::read_to_string(&gitignore).unwrap() + "include/lib/h0.h\n";
+    fs::write(&gitignore, ignored).unwrap();
+    git(&repos.worktree, &["rm", "--cached", "--quiet", "include/lib/h0.h"]);
+
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(summary["shards"]["relocated"], 3);
+    assert_eq!(summary["shards"]["skipped_deleted"], 0);
+}
+
+#[test]
 fn relocate_prints_json_summary() {
     let repos = indexed_repo_with_worktree();
     git(&repos.worktree, &["rm", "--quiet", "include/lib/h0.h"]);

@@ -82,11 +82,6 @@ impl GitRepo {
         parse_name_status(&self.run(&["diff", "--name-status", "-z", "--no-renames", base])?)
     }
 
-    /// Repository-relative paths of untracked files that are not ignored.
-    pub fn untracked_files(&self) -> Result<Vec<PathBuf>> {
-        Ok(parse_path_list(&self.run(&["ls-files", "--others", "--exclude-standard", "--full-name", "-z"])?))
-    }
-
     fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
         let output = self.output(args)?;
         self.checked(args, output)

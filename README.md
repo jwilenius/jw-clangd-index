@@ -31,7 +31,7 @@ jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW].
 - Paths under the donor root become paths under the target root; `--map` adds further roots, such as an out-of-tree build directory.
 - When the donor root as given (or as `git worktree list` prints it) goes through a symlink, paths under both forms are mapped.
 - A warning reports a relocation in which no shard path, or no compilation database string, was under a mapped root.
-- Shards of files deleted in the target (relative to the donor's `HEAD`) are not copied; a file removed only from the git index (`git rm --cached`) still exists and keeps its shard.
+- Shards of files deleted in the target (relative to the donor's `HEAD`) are not copied; a file removed only from the git index (`git rm --cached`) still exists, even when ignored, and keeps its shard.
 - Shards that already exist in the target are replaced; `--keep-existing` keeps them.
 - It also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten, unless `--no-relocate-cdb`; an existing readable target database is replaced, or kept with `--keep-existing`.
 - When the target's database path is a symlink, such as a tracked one into the build directory, the database is written where it points (creating the directory), so the symlink stays.

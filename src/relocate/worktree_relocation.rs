@@ -258,8 +258,7 @@ fn read_deleted_files(donor_head: &str, target_root: &Path) -> Result<HashSet<Pa
     let toplevel = git.toplevel()?;
     let toplevel = fs::canonicalize(&toplevel).with_context(|| format!("target worktree {}", toplevel.display()))?;
     let file_changes = git.working_tree_changes(donor_head)?;
-    let untracked = git.untracked_files()?;
-    Ok(find_deleted_files(&toplevel, &file_changes, &untracked))
+    Ok(find_deleted_files(&toplevel, &file_changes))
 }
 
 fn warn_about_index(index: &IndexRelocationReport, donor_root: &Path) {
