@@ -1,7 +1,13 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { describeRelocation, parseRelocationSummary, type RelocationSummary, SummaryFormatError } from "../src/relocationSummary";
+import {
+  describeRelocation,
+  describeRelocationProblems,
+  parseRelocationSummary,
+  type RelocationSummary,
+  SummaryFormatError,
+} from "../src/relocationSummary";
 
 /** Output of `jw-clangd-index relocate --json` with an automatically chosen donor. */
 const SUMMARY_JSON = `{
@@ -27,6 +33,7 @@ const SUMMARY_JSON = `{
     "stale_files": 3,
     "main_files_without_shard": []
   },
+  "reindex_failure": null,
   "elapsed_seconds": 1.25
 }`;
 
@@ -43,7 +50,16 @@ const SUMMARY: RelocationSummary = {
     staleFiles: 3,
     mainFilesWithoutShard: [],
   },
+  reindexFailure: undefined,
   elapsedSeconds: 1.25,
+};
+
+/** {@link SUMMARY} of a run whose compilation database and prediction failed. */
+const INCOMPLETE_SUMMARY: RelocationSummary = {
+  ...SUMMARY,
+  cdb: { action: "failed", path: undefined, reason: "parsing compilation database" },
+  reindex: undefined,
+  reindexFailure: "reading /work/feature/.cache/clangd/index",
 };
 
 /** `json` with the field at `path` set to `value`; `undefined` removes it. */
@@ -76,6 +92,15 @@ describe("parseRelocationSummary", () => {
     const summary = parseRelocationSummary(withField(["cdb"], tracked));
 
     assert.deepEqual(summary.cdb, { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" });
+  });
+
+  it("reads a failed compilation database and prediction", () => {
+    const cdb = { action: "failed", path: null, reason: "parsing compilation database" };
+    const json = withField(["reindex_failure"], "reading /work/feature/.cache/clangd/index", withField(["cdb"], cdb));
+
+    const summary = parseRelocationSummary(withField(["reindex"], null, json));
+
+    assert.deepEqual(summary, INCOMPLETE_SUMMARY);
   });
 
   it("rejects a missing field", () => {
@@ -117,9 +142,30 @@ describe("describeRelocation", () => {
     assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so it was not replaced$/);
   });
 
+  it("says what a run that relocated the shards could not do", () => {
+    assert.equal(
+      describeRelocation(INCOMPLETE_SUMMARY),
+      "relocated 9876 shards from main (12 kept, 2 failed); reindex not predicted; compile_commands.json was not relocated",
+    );
+  });
+
   it("warns when git tracks the compilation database", () => {
     const cdb = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" } as const;
 
     assert.match(describeRelocation({ ...SUMMARY, cdb }), /; git tracks compile_commands.json, so it was not replaced$/);
+  });
+});
+
+describe("describeRelocationProblems", () => {
+  it("is undefined for a complete run", () => {
+    assert.equal(describeRelocationProblems(SUMMARY), undefined);
+  });
+
+  it("gives the reasons of the compilation database and prediction failures", () => {
+    assert.equal(
+      describeRelocationProblems(INCOMPLETE_SUMMARY),
+      "relocating compile_commands.json failed: parsing compilation database; " +
+        "predicting the reindex failed: reading /work/feature/.cache/clangd/index",
+    );
   });
 });

@@ -58,11 +58,23 @@ pub struct WorktreeRelocationReport {
     pub is_dry_run: bool,
     pub index: IndexRelocationReport,
     pub cdb: CdbOutcome,
-    pub prediction: ReindexPrediction,
+    pub prediction: PredictionOutcome,
+    pub elapsed: Duration,
+}
+
+/// A failed prediction leaves the relocation standing, since the shards are written by then.
+#[derive(Clone, Debug)]
+pub enum PredictionOutcome {
+    Predicted(TargetPrediction),
+    Unavailable { reason: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct TargetPrediction {
+    pub reindex: ReindexPrediction,
     /// False when no usable compilation database lists the main files, so the prediction walks the TUs
     /// of the index and holds only once the target has a database.
     pub has_cdb_main_files: bool,
-    pub elapsed: Duration,
 }
 
 /// The report as `relocate --json` prints it, with complete path lists where the text summary truncates.
@@ -75,7 +87,10 @@ pub struct RelocationSummary<'a> {
     pub target_root: &'a Path,
     pub shards: ShardSummary,
     pub cdb: CdbSummary<'a>,
-    pub reindex: ReindexSummary<'a>,
+    /// `None` when the prediction failed.
+    pub reindex: Option<ReindexSummary<'a>>,
+    /// Why the prediction failed; `None` when `reindex` holds it.
+    pub reindex_failure: Option<&'a str>,
     pub elapsed_seconds: f64,
 }
 
@@ -93,8 +108,8 @@ pub struct CdbSummary<'a> {
     pub action: CdbAction,
     /// The database kept or written (or that would be, in a dry run), or the link skipped.
     pub path: Option<&'a Path>,
-    /// Why the link was skipped (a [`LinkSkipReason::code`]) or the database kept as git tracks it;
-    /// `None` for the other actions.
+    /// Why the link was skipped (a [`LinkSkipReason::code`]), the database kept as git tracks it, or
+    /// relocating failed (the error message); `None` for the other actions.
     pub reason: Option<&'a str>,
 }
 
@@ -112,6 +127,7 @@ pub enum CdbAction {
     /// Not written, since git tracks the target's database.
     KeptTracked,
     SkippedLink,
+    Failed,
 }
 
 /// The [`CdbSummary::reason`] of [`CdbAction::KeptTracked`].
@@ -144,11 +160,6 @@ struct MainFileSource<'a> {
     path_map: Option<&'a PathMap>,
 }
 
-struct TargetPrediction {
-    reindex: ReindexPrediction,
-    has_cdb_main_files: bool,
-}
-
 /// The main files clangd loads, and whether a compilation database listed them.
 struct MainFiles {
     paths: Vec<PathBuf>,
@@ -172,8 +183,9 @@ pub fn relocate_worktree(request: &WorktreeRelocationRequest) -> Result<Worktree
         deleted_target_paths: deleted_files.clone(),
     })?;
     warn_about_index(&index, &donor.root);
-    let cdb = place_cdb(request, &donor.root, &target_root, &path_map)?;
-    let prediction = predict(request, &donor.root, &target_root, &path_map, &cdb, &deleted_files)?;
+    let cdb = place_cdb(request, &donor.root, &target_root, &path_map);
+    let prediction = predict(request, &donor.root, &target_root, &path_map, &cdb, &deleted_files)
+        .map_or_else(|error| unavailable_prediction(&error), PredictionOutcome::Predicted);
 
     Ok(WorktreeRelocationReport {
         donor_root: donor.root,
@@ -182,8 +194,7 @@ pub fn relocate_worktree(request: &WorktreeRelocationRequest) -> Result<Worktree
         is_dry_run: request.is_dry_run,
         index,
         cdb,
-        prediction: prediction.reindex,
-        has_cdb_main_files: prediction.has_cdb_main_files,
+        prediction,
         elapsed: started.elapsed(),
     })
 }
@@ -290,7 +301,8 @@ fn warn_unmapped_index(index: &IndexRelocationReport, donor_root: &Path) {
     }
 }
 
-fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root: &Path, path_map: &PathMap) -> Result<CdbOutcome> {
+/// A failure is reported instead of returned, since the shards are written by then.
+fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root: &Path, path_map: &PathMap) -> CdbOutcome {
     if request.is_relocate_cdb {
         let outcome = relocate_cdb(&CdbRelocationRequest {
             donor_root,
@@ -298,9 +310,10 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
             path_map,
             is_overwrite: request.is_overwrite,
             is_dry_run: request.is_dry_run,
-        })?;
+        })
+        .unwrap_or_else(|error| CdbOutcome::Failed { reason: format!("{error:#}") });
         warn_about_cdb(&outcome, target_root);
-        return Ok(outcome);
+        return outcome;
     }
     let is_target_cdb_present = find_cdb(target_root).is_some();
     if !is_target_cdb_present {
@@ -310,7 +323,7 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
             target_root.display()
         );
     }
-    Ok(CdbOutcome::NotRequested { is_target_cdb_present })
+    CdbOutcome::NotRequested { is_target_cdb_present }
 }
 
 fn warn_about_cdb(outcome: &CdbOutcome, target_root: &Path) {
@@ -319,18 +332,32 @@ fn warn_about_cdb(outcome: &CdbOutcome, target_root: &Path) {
             log::warn!("the donor has no compile_commands.json to relocate; clangd will not use the index until the target has one")
         }
         CdbOutcome::SkippedLink { link, reason } => {
-            let consequence = if find_cdb(target_root).is_none() { "; clangd will not use the index until the target has one" } else { "" };
             log::warn!(
-                "{} {}, so the relocated compile_commands.json is not written through it{consequence}",
+                "{} {}, so the relocated compile_commands.json is not written through it{}",
                 link.display(),
-                describe_skip_reason(*reason)
+                describe_skip_reason(*reason),
+                describe_missing_cdb(target_root)
             )
+        }
+        CdbOutcome::Failed { reason } => {
+            log::warn!("cannot relocate compile_commands.json: {reason}{}", describe_missing_cdb(target_root))
         }
         CdbOutcome::KeptTracked(path) => {
             log::warn!("git tracks {}, so the relocated compile_commands.json does not replace it", path.display())
         }
         CdbOutcome::NotRequested { .. } | CdbOutcome::KeptExisting(_) | CdbOutcome::Written(_) => {}
     }
+}
+
+/// What a target without a compilation database means, appended to a warning; empty when it has one.
+fn describe_missing_cdb(target_root: &Path) -> &'static str {
+    if find_cdb(target_root).is_none() { "; clangd will not use the index until the target has one" } else { "" }
+}
+
+fn unavailable_prediction(error: &anyhow::Error) -> PredictionOutcome {
+    let reason = format!("{error:#}");
+    log::warn!("cannot predict what clangd reindexes: {reason}");
+    PredictionOutcome::Unavailable { reason }
 }
 
 fn predict(
@@ -418,9 +445,10 @@ fn find_main_file_source<'a>(
 fn target_cdb_path(cdb: &CdbOutcome, target_root: &Path) -> Option<PathBuf> {
     match cdb {
         CdbOutcome::Written(cdb_path) | CdbOutcome::KeptExisting(cdb_path) => Some(cdb_path.clone()),
-        CdbOutcome::NotRequested { is_target_cdb_present: true } | CdbOutcome::SkippedLink { .. } | CdbOutcome::KeptTracked(_) => {
-            find_cdb(target_root).map(|relative_path| target_root.join(relative_path))
-        }
+        CdbOutcome::NotRequested { is_target_cdb_present: true }
+        | CdbOutcome::SkippedLink { .. }
+        | CdbOutcome::KeptTracked(_)
+        | CdbOutcome::Failed { .. } => find_cdb(target_root).map(|relative_path| target_root.join(relative_path)),
         CdbOutcome::NotRequested { is_target_cdb_present: false } | CdbOutcome::DonorCdbMissing => None,
     }
 }
@@ -444,14 +472,25 @@ impl WorktreeRelocationReport {
                 failed: self.index.failures.len(),
             },
             cdb: summarize_cdb(&self.cdb),
-            reindex: ReindexSummary {
-                has_cdb_main_files: self.has_cdb_main_files,
-                reindexed_tus: &self.prediction.reindexed_tus,
-                stale_files: self.prediction.stale_files,
-                main_files_without_shard: &self.prediction.main_files_without_shard,
+            reindex: match &self.prediction {
+                PredictionOutcome::Predicted(prediction) => Some(summarize_prediction(prediction)),
+                PredictionOutcome::Unavailable { .. } => None,
+            },
+            reindex_failure: match &self.prediction {
+                PredictionOutcome::Predicted(_) => None,
+                PredictionOutcome::Unavailable { reason } => Some(reason),
             },
             elapsed_seconds: self.elapsed.as_secs_f64(),
         }
+    }
+}
+
+fn summarize_prediction(prediction: &TargetPrediction) -> ReindexSummary<'_> {
+    ReindexSummary {
+        has_cdb_main_files: prediction.has_cdb_main_files,
+        reindexed_tus: &prediction.reindex.reindexed_tus,
+        stale_files: prediction.reindex.stale_files,
+        main_files_without_shard: &prediction.reindex.main_files_without_shard,
     }
 }
 
@@ -470,6 +509,7 @@ fn summarize_cdb(cdb: &CdbOutcome) -> CdbSummary<'_> {
         CdbOutcome::SkippedLink { link, reason } => {
             CdbSummary { action: CdbAction::SkippedLink, path: Some(link), reason: Some(reason.code()) }
         }
+        CdbOutcome::Failed { reason } => CdbSummary { action: CdbAction::Failed, path: None, reason: Some(reason) },
     }
 }
 
@@ -482,7 +522,10 @@ impl fmt::Display for WorktreeRelocationReport {
         writeln!(formatter, "target:   {}", self.target_root.display())?;
         writeln!(formatter, "shards:   {}", describe_shards(&self.index))?;
         writeln!(formatter, "cdb:      {}", describe_cdb(&self.cdb, self.is_dry_run))?;
-        write_prediction(formatter, &self.prediction, self.has_cdb_main_files, &self.target_root)?;
+        match &self.prediction {
+            PredictionOutcome::Predicted(prediction) => write_prediction(formatter, prediction, &self.target_root)?,
+            PredictionOutcome::Unavailable { reason } => writeln!(formatter, "reindex:  not predicted: {reason}")?,
+        }
         writeln!(formatter, "elapsed:  {:.3} s", self.elapsed.as_secs_f64())
     }
 }
@@ -514,6 +557,7 @@ fn describe_cdb(cdb: &CdbOutcome, is_dry_run: bool) -> String {
         CdbOutcome::Written(path) if is_dry_run => format!("would write {}", path.display()),
         CdbOutcome::Written(path) => format!("wrote {}", path.display()),
         CdbOutcome::KeptTracked(path) => format!("kept {}, which git tracks", path.display()),
+        CdbOutcome::Failed { reason } => format!("failed: {reason}"),
         CdbOutcome::SkippedLink { link, reason } => format!("not written: {} {}", link.display(), describe_skip_reason(*reason)),
     }
 }
@@ -526,26 +570,68 @@ fn describe_skip_reason(reason: LinkSkipReason) -> &'static str {
     }
 }
 
-fn write_prediction(
-    formatter: &mut fmt::Formatter<'_>,
-    prediction: &ReindexPrediction,
-    has_cdb_main_files: bool,
-    target_root: &Path,
-) -> fmt::Result {
-    let condition = if has_cdb_main_files { "" } else { " once a compile database exists" };
+fn write_prediction(formatter: &mut fmt::Formatter<'_>, prediction: &TargetPrediction, target_root: &Path) -> fmt::Result {
+    let reindex = &prediction.reindex;
+    let condition = if prediction.has_cdb_main_files { "" } else { " once a compile database exists" };
     writeln!(
         formatter,
         "reindex:  {} TUs predicted{condition} ({} stale files), {} CDB entries without a shard",
-        prediction.reindexed_tus.len(),
-        prediction.stale_files,
-        prediction.main_files_without_shard.len()
+        reindex.reindexed_tus.len(),
+        reindex.stale_files,
+        reindex.main_files_without_shard.len()
     )?;
-    for tu in prediction.reindexed_tus.iter().take(MAX_LISTED_TUS) {
+    for tu in reindex.reindexed_tus.iter().take(MAX_LISTED_TUS) {
         writeln!(formatter, "          {}", tu.strip_prefix(target_root).unwrap_or(tu).display())?;
     }
-    let unlisted = prediction.reindexed_tus.len().saturating_sub(MAX_LISTED_TUS);
+    let unlisted = reindex.reindexed_tus.len().saturating_sub(MAX_LISTED_TUS);
     if unlisted > 0 {
         writeln!(formatter, "          ... and {unlisted} more")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_without_prediction() -> WorktreeRelocationReport {
+        WorktreeRelocationReport {
+            donor_root: PathBuf::from("/work/main"),
+            donor_selection: DonorSelection::Explicit,
+            target_root: PathBuf::from("/work/wt"),
+            is_dry_run: false,
+            index: IndexRelocationReport {
+                relocated: 3,
+                skipped_existing: 0,
+                skipped_deleted: 0,
+                skipped_unsupported_version: 0,
+                failures: Vec::new(),
+                rewritten_strings: 9,
+                elapsed: Duration::ZERO,
+            },
+            cdb: CdbOutcome::Failed { reason: "parsing compilation database".to_string() },
+            prediction: PredictionOutcome::Unavailable { reason: "reading /work/wt/.cache/clangd/index".to_string() },
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn summary_reports_failed_cdb_and_unavailable_prediction() {
+        let report = report_without_prediction();
+
+        let summary = serde_json::to_value(report.summary()).unwrap();
+
+        let expected_cdb = serde_json::json!({ "action": "failed", "path": null, "reason": "parsing compilation database" });
+        assert_eq!(summary["cdb"], expected_cdb);
+        assert_eq!(summary["reindex"], serde_json::Value::Null);
+        assert_eq!(summary["reindex_failure"], "reading /work/wt/.cache/clangd/index");
+    }
+
+    #[test]
+    fn text_summary_reports_failed_cdb_and_unavailable_prediction() {
+        let text = report_without_prediction().to_string();
+
+        assert!(text.contains("cdb:      failed: parsing compilation database\n"), "{text}");
+        assert!(text.contains("reindex:  not predicted: reading /work/wt/.cache/clangd/index\n"), "{text}");
+    }
 }

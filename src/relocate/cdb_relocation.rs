@@ -37,6 +37,10 @@ pub enum CdbOutcome {
         link: PathBuf,
         reason: LinkSkipReason,
     },
+    /// Relocating failed, such as on invalid donor JSON; the target's database is as it was.
+    Failed {
+        reason: String,
+    },
 }
 
 /// Why the target's database path is not written through.

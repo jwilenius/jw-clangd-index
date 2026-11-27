@@ -9,6 +9,7 @@ const CDB_ACTIONS = [
   "written",
   "kept_tracked",
   "skipped_link",
+  "failed",
 ] as const;
 export type CdbAction = (typeof CDB_ACTIONS)[number];
 /** Actions after which the target has no compilation database, so clangd ignores the index. */
@@ -25,7 +26,7 @@ export interface ShardCounts {
 export interface CdbSummary {
   readonly action: CdbAction;
   readonly path: string | undefined;
-  /** Why the database was not written, for `kept_tracked` and `skipped_link`. */
+  /** Why the database was not written, for `kept_tracked`, `skipped_link` and `failed`. */
   readonly reason: string | undefined;
 }
 
@@ -46,7 +47,10 @@ export interface RelocationSummary {
   readonly targetRoot: string;
   readonly shards: ShardCounts;
   readonly cdb: CdbSummary;
-  readonly reindex: ReindexSummary;
+  /** `undefined` when the prediction failed. */
+  readonly reindex: ReindexSummary | undefined;
+  /** Why the prediction failed; `undefined` when `reindex` holds it. */
+  readonly reindexFailure: string | undefined;
   readonly elapsedSeconds: number;
 }
 
@@ -66,7 +70,8 @@ export function parseRelocationSummary(text: string): RelocationSummary {
     targetRoot: readString(summary, "target_root"),
     shards: parseShardCounts(asObject(summary["shards"], "shards")),
     cdb: parseCdbSummary(asObject(summary["cdb"], "cdb")),
-    reindex: parseReindexSummary(asObject(summary["reindex"], "reindex")),
+    reindex: summary["reindex"] === null ? undefined : parseReindexSummary(asObject(summary["reindex"], "reindex")),
+    reindexFailure: readOptionalString(summary, "reindex_failure"),
     elapsedSeconds: readNumber(summary, "elapsed_seconds"),
   };
 }
@@ -160,7 +165,7 @@ export function describeRelocation(summary: RelocationSummary): string {
   const { shards } = summary;
   const verb = summary.isDryRun ? "would relocate" : "relocated";
   const keptAndFailed = `${shards.keptExisting} kept, ${shards.failed} failed`;
-  const reindex = `${summary.reindex.reindexedTus.length} TUs to reindex`;
+  const reindex = summary.reindex === undefined ? "reindex not predicted" : `${summary.reindex.reindexedTus.length} TUs to reindex`;
   const cdbWarning = describeCdbWarning(summary.cdb.action);
   return `${verb} ${shards.relocated} shards from ${path.basename(summary.donorRoot)} (${keptAndFailed}); ${reindex}${cdbWarning}`;
 }
@@ -169,6 +174,9 @@ function describeCdbWarning(action: CdbAction): string {
   if (CDB_MISSING_ACTIONS.includes(action)) {
     return "; no compile_commands.json, so clangd ignores the index";
   }
+  if (action === "failed") {
+    return "; compile_commands.json was not relocated";
+  }
   if (action === "kept_tracked") {
     return "; git tracks compile_commands.json, so it was not replaced";
   }
@@ -176,4 +184,16 @@ function describeCdbWarning(action: CdbAction): string {
     return "; compile_commands.json links outside the worktree, so it was not replaced";
   }
   return "";
+}
+
+/** What went wrong in a run that relocated the shards, for a warning; `undefined` when nothing did. */
+export function describeRelocationProblems(summary: RelocationSummary): string | undefined {
+  const problems: string[] = [];
+  if (summary.cdb.action === "failed") {
+    problems.push(`relocating compile_commands.json failed: ${summary.cdb.reason ?? "unknown reason"}`);
+  }
+  if (summary.reindexFailure !== undefined) {
+    problems.push(`predicting the reindex failed: ${summary.reindexFailure}`);
+  }
+  return problems.length === 0 ? undefined : problems.join("; ");
 }

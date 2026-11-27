@@ -16,6 +16,7 @@ function summary(relocated: number, isDryRun: boolean): RelocationSummary {
     shards: { relocated, keptExisting: 0, skippedDeleted: 0, skippedUnsupportedVersion: 0, failed: 0 },
     cdb: { action: "written", path: "/work/feature/compile_commands.json", reason: undefined },
     reindex: { hasCdbMainFiles: true, reindexedTus: [], staleFiles: 0, mainFilesWithoutShard: [] },
+    reindexFailure: undefined,
     elapsedSeconds: 1,
   };
 }

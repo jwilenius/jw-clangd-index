@@ -8,7 +8,7 @@ import { findCliFailure, interpretRelocationRun, type RelocationResult } from ".
 import { describeCheckout, selectDonorWorktrees, type WorktreeEntry } from "./gitWorktree";
 import { type ProcessResult, runProcess } from "./processRunner";
 import { type AutoRelocationDecision, classifyFolder, decideAutoRelocation, isClangdRestartNeeded } from "./relocationPolicy";
-import { describeRelocation } from "./relocationSummary";
+import { describeRelocation, describeRelocationProblems } from "./relocationSummary";
 import { countIndexShards, countLargestDonorIndex, listWorktrees, readGitLocation, resolveRealPath } from "./worktreeProbe";
 
 const CONFIGURATION_SECTION = "jwClangdIndex";
@@ -169,6 +169,13 @@ export class RelocationController {
       await this.restartClangd();
     }
     const message = `${MESSAGE_PREFIX}: ${describeRelocation(result.summary)}`;
+    const problems = describeRelocationProblems(result.summary);
+    if (problems !== undefined) {
+      const warning = `${message}; ${problems}`;
+      this.log.warn(warning);
+      this.showWithLogAction(vscode.window.showWarningMessage, warning);
+      return;
+    }
     this.log.info(message);
     if (origin === "automatic") {
       vscode.window.setStatusBarMessage(`$(database) ${message}`, STATUS_MESSAGE_TIMEOUT_MS);
@@ -229,6 +236,11 @@ export class RelocationController {
     const text = `${MESSAGE_PREFIX}: ${message}`;
     this.log.error(text);
     const show = origin === "automatic" ? vscode.window.showWarningMessage : vscode.window.showErrorMessage;
+    this.showWithLogAction(show, text);
+  }
+
+  /** Does not wait for the notification. */
+  private showWithLogAction(show: typeof vscode.window.showWarningMessage, text: string): void {
     void show(text, SHOW_LOG_ACTION).then((action) => {
       if (action === SHOW_LOG_ACTION) {
         this.log.show();

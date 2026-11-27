@@ -162,7 +162,18 @@ fn relocate_prints_json_summary() {
     assert!(summary["reindex"]["stale_files"].is_u64(), "{summary}");
     assert_eq!(summary["reindex"]["main_files_without_shard"], serde_json::json!([]));
     assert!(summary["elapsed_seconds"].is_f64(), "{summary}");
-    let expected_keys = ["cdb", "donor_changed_files", "donor_root", "elapsed_seconds", "is_dry_run", "reindex", "shards", "target_root"];
+    assert_eq!(summary["reindex_failure"], serde_json::Value::Null);
+    let expected_keys = [
+        "cdb",
+        "donor_changed_files",
+        "donor_root",
+        "elapsed_seconds",
+        "is_dry_run",
+        "reindex",
+        "reindex_failure",
+        "shards",
+        "target_root",
+    ];
     assert_eq!(summary.as_object().unwrap().keys().collect::<Vec<_>>(), expected_keys);
 }
 
@@ -241,6 +252,25 @@ fn relocate_warns_that_clangd_ignores_index_behind_skipped_dangling_link() {
         &run.stderr,
         "links outside the target, so the relocated compile_commands.json is not written through it; clangd will not use the index until the target has one",
     );
+}
+
+#[test]
+fn relocate_reports_cdb_failure_after_writing_shards() {
+    let repos = indexed_repo_with_worktree();
+    fs::write(repos.main.join(CDB_RELATIVE_PATH), "[{").unwrap();
+
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(summary["shards"]["relocated"], 3);
+    assert_eq!(summary["cdb"]["action"], "failed");
+    assert_eq!(summary["cdb"]["path"], serde_json::Value::Null);
+    assert_contains(summary["cdb"]["reason"].as_str().unwrap(), "parsing compilation database");
+    assert_eq!(summary["reindex"]["has_cdb_main_files"], false);
+    assert_contains(&run.stderr, "cannot relocate compile_commands.json: ");
+    assert_contains(&run.stderr, "; clangd will not use the index until the target has one");
+    assert!(!repos.worktree.join(CDB_RELATIVE_PATH).exists());
 }
 
 #[test]
