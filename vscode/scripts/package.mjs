@@ -16,4 +16,4 @@ execFileSync("cargo", ["build", "--release"], { cwd: CRATE_DIR, stdio: "inherit"
 const binDir = path.join("bin", target);
 fs.mkdirSync(binDir, { recursive: true });
 fs.copyFileSync(path.join(CRATE_DIR, "target", "release", BINARY_NAME), path.join(binDir, BINARY_NAME));
-execFileSync("vsce", ["package", "--target", target, "--skip-license", "--allow-missing-repository"], { stdio: "inherit" });
+execFileSync("vsce", ["package", "--target", target, "--skip-license"], { stdio: "inherit" });

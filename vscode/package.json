@@ -4,8 +4,12 @@
   "description": "Relocates a clangd background index into new git worktrees, so clangd reindexes only the changed files.",
   "version": "0.1.0",
   "license": "MIT",
-  "publisher": "jw",
+  "publisher": "jwilenius",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jwilenius/jw-clangd-index.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
