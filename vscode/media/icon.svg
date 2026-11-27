@@ -1,0 +1,53 @@
+<!-- Source of media/icon.png, the extension icon: a git fork whose left branch holds a built index (a shard stack),
+     beamed along an arc to the empty right branch. The Marketplace accepts only PNG icons; render at 256x256 with a
+     transparent background. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26315E"/>
+      <stop offset="1" stop-color="#0D1124"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.32" r="0.6">
+      <stop offset="0" stop-color="#7C5CFF" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#7C5CFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22E1FF"/>
+      <stop offset="1" stop-color="#FF4FD8"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#tile)"/>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#halo)"/>
+
+  <!-- git fork -->
+  <g fill="none" stroke="#C9D1F5" stroke-width="5" stroke-linecap="round" stroke-opacity="0.85">
+    <path d="M64 110V90"/>
+    <path d="M64 90C64 78 36 80 36 66V62"/>
+    <path d="M64 90C64 78 92 80 92 66V62"/>
+  </g>
+  <circle cx="64" cy="90" r="5.5" fill="#C9D1F5"/>
+
+  <!-- donor index: a solid shard stack -->
+  <g fill="#22E1FF" filter="url(#glow)">
+    <rect x="22" y="52" width="28" height="7" rx="3.5"/>
+    <rect x="22" y="43" width="28" height="7" rx="3.5" fill-opacity="0.8"/>
+    <rect x="22" y="34" width="28" height="7" rx="3.5" fill-opacity="0.6"/>
+  </g>
+
+  <!-- target index: the stack arriving -->
+  <g fill="none" stroke="#FF4FD8" stroke-width="2.5" filter="url(#glow)">
+    <rect x="78" y="52" width="28" height="7" rx="3.5" fill="#FF4FD8" stroke="none"/>
+    <rect x="79.25" y="44.25" width="25.5" height="4.5" rx="2.25" stroke-opacity="0.75"/>
+    <rect x="79.25" y="35.25" width="25.5" height="4.5" rx="2.25" stroke-opacity="0.45"/>
+  </g>
+
+  <!-- relocation beam -->
+  <g fill="none" stroke="url(#beam)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M36 27C44 12 84 12 92 26"/>
+    <path d="M84 24.5L92.5 27L94 18.5"/>
+  </g>
+</svg>

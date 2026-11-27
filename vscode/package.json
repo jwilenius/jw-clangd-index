@@ -4,6 +4,7 @@
   "description": "Relocates a clangd background index into new git worktrees, so clangd reindexes only the changed files.",
   "version": "0.1.0",
   "license": "MIT",
+  "icon": "media/icon.png",
   "publisher": "jwilenius",
   "private": true,
   "repository": {
