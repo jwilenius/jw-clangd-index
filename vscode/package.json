@@ -76,6 +76,7 @@
     "test": "tsc --outDir out && node --test out/test/*.test.js",
     "vscode:prepublish": "npm run typecheck && npm run build",
     "package": "node scripts/package.mjs",
+    "notices": "cargo about generate --manifest-path ../Cargo.toml --locked --fail --output-file THIRD-PARTY-NOTICES.txt ../about.hbs",
     "format": "prettier --write src test scripts README.md",
     "format:check": "prettier --check src test scripts README.md"
   },
