@@ -1,3 +1,5 @@
+<p align="center"><img src="vscode/media/icon.png" alt="jw-clangd-index icon" width="128"></p>
+
 # jw-clangd-index
 
 Copies a clangd background index from one git worktree to another, so a new worktree starts with a full index instead of a cold reindex.
