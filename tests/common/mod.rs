@@ -1,4 +1,5 @@
-//! Real clangd 23.1.0 shards (format v20) and git repositories shared by the integration tests.
+//! Real clangd 23.1.0 shards (format v20), relocated to neutral paths, and git repositories shared by the
+//! integration tests.
 //!
 //! Each test binary uses only some of these helpers.
 #![allow(dead_code)]
@@ -16,13 +17,15 @@ use jw_clangd_index::git::REPOSITORY_ENV_VARS;
 use jw_clangd_index::relocate::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationRequest, relocate_index};
 use jw_clangd_index::relocate::path_map::{PathMap, RootMapping};
 
-/// Project root of the checkout that clangd 23.1.0 indexed when it wrote the project fixtures.
+/// Project root of the project fixtures.
 ///
-/// Only a string baked into the fixture bytes; the directory need not exist. The fixtures were made with
-/// the shared scripts `make-sample-cpp-project.py` and `clangd-background-index-run.py`.
-pub const SAMPLE_ROOT: &str = "/tmp/claude-1000/-home-jim-projects-jw-clangd-index/bf56e891-af29-4210-8506-f55cbd7454da/scratchpad/sample";
-pub const TU_SHARD: &str = "tu0.cpp.F62AFE0C00FAC064.idx";
-pub const HEADER_SHARD: &str = "h0.h.AE9F8A9495C4CC86.idx";
+/// Only a string baked into the fixture bytes; the directory need not exist. clangd 23.1.0 wrote the
+/// fixtures for a sample project made with the shared scripts `make-sample-cpp-project.py` and
+/// `clangd-background-index-run.py`; `jw-clangd-index relocate` then moved its project root here and the
+/// clangd install in the compile command's `-resource-dir` to `/opt/clangd_23.1.0`.
+pub const SAMPLE_ROOT: &str = "/work/sample";
+pub const TU_SHARD: &str = "tu0.cpp.FAA809B2FC5B892A.idx";
+pub const HEADER_SHARD: &str = "h0.h.1D5EEB2215EAE128.idx";
 /// System header shard (paths under `/usr`, URI contains `c%2B%2B`).
 pub const SYSTEM_SHARD: &str = "uses_allocator_args.h.DD2424DE20F3F1C7.idx";
 pub const ALL_SHARDS: [&str; 3] = [TU_SHARD, HEADER_SHARD, SYSTEM_SHARD];
