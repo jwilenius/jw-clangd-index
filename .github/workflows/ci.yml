@@ -1,0 +1,49 @@
+name: Build, test and package
+
+# Every push to main checks the Rust crate and the VS Code extension and packages the linux-x64 installer. Nothing is
+# tagged, released or published.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push replaces a run still waiting in the queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - name: Check and package the extension
+        working-directory: vscode
+        run: |
+          npm ci
+          npm run typecheck
+          npm run format:check
+          npm test
+          npm run package
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: jw-clangd-index-vsix
+          path: vscode/*.vsix
+          if-no-files-found: error
+          retention-days: 30
