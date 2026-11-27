@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::format::shard::ShardFile;
 use crate::format::shard_contents::decode_shard_contents;
@@ -66,11 +66,11 @@ struct RelocateArgs {
     #[arg(long = "dry-run")]
     is_dry_run: bool,
     /// Keep target shards and compilation database that already exist instead of replacing them.
-    #[arg(long = "keep-existing")]
-    is_keep_existing: bool,
+    #[arg(long = "keep-existing", action = ArgAction::SetFalse)]
+    is_overwrite: bool,
     /// Do not copy the donor's compile_commands.json with paths rewritten.
-    #[arg(long = "no-relocate-cdb")]
-    is_no_relocate_cdb: bool,
+    #[arg(long = "no-relocate-cdb", action = ArgAction::SetFalse)]
+    is_relocate_cdb: bool,
     /// Print the summary as JSON.
     #[arg(long = "json")]
     is_json: bool,
@@ -102,11 +102,11 @@ struct InstallHookArgs {
     #[arg(long = "repo", value_name = "PATH", default_value = ".")]
     repo: PathBuf,
     /// Make the hook pass --no-relocate-cdb.
-    #[arg(long = "no-relocate-cdb")]
-    is_no_relocate_cdb: bool,
+    #[arg(long = "no-relocate-cdb", action = ArgAction::SetFalse)]
+    is_relocate_cdb: bool,
     /// Make the hook pass --keep-existing.
-    #[arg(long = "keep-existing")]
-    is_keep_existing: bool,
+    #[arg(long = "keep-existing", action = ArgAction::SetFalse)]
+    is_overwrite: bool,
     /// Replace a post-checkout hook that this tool did not install.
     #[arg(long = "force")]
     is_force: bool,
@@ -161,8 +161,8 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
         extra_mappings: args.mappings,
         compression: args.compression.into(),
         is_dry_run: args.is_dry_run,
-        is_overwrite: !args.is_keep_existing,
-        is_relocate_cdb: !args.is_no_relocate_cdb,
+        is_overwrite: args.is_overwrite,
+        is_relocate_cdb: args.is_relocate_cdb,
         user_index_dir: user_index_dir(env::var_os(CACHE_HOME_ENV), env::var_os(HOME_ENV)),
     })?;
     if !args.is_json {
@@ -209,7 +209,7 @@ fn run_diff(args: DiffArgs, out: &mut impl Write) -> Result<ExitCode> {
 
 fn run_install_hook(args: InstallHookArgs, out: &mut impl Write) -> Result<ExitCode> {
     let binary = std::env::current_exe().context("finding this executable's path")?;
-    let relocate_flags = HookRelocateFlags { is_no_relocate_cdb: args.is_no_relocate_cdb, is_keep_existing: args.is_keep_existing };
+    let relocate_flags = HookRelocateFlags { is_relocate_cdb: args.is_relocate_cdb, is_overwrite: args.is_overwrite };
     let report = install_hook(&HookInstallRequest { repo: args.repo, binary, relocate_flags, is_force: args.is_force })?;
     write!(out, "{report}")?;
     Ok(ExitCode::SUCCESS)
@@ -241,6 +241,32 @@ mod tests {
         assert_eq!(user_index_dir(cache_home, home.clone()), Some(PathBuf::from("/xdg/clangd/index")));
         assert_eq!(user_index_dir(Some(OsString::new()), home), Some(PathBuf::from("/home/u/.cache/clangd/index")));
         assert_eq!(user_index_dir(None, None), None);
+    }
+
+    fn parse(args: &[&str]) -> Command {
+        Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[test]
+    fn relocate_opt_out_flags_clear_positive_fields() {
+        let Command::Relocate(defaults) = parse(&["jw-clangd-index", "relocate"]) else { panic!("not relocate") };
+        let Command::Relocate(opted_out) = parse(&["jw-clangd-index", "relocate", "--keep-existing", "--no-relocate-cdb"]) else {
+            panic!("not relocate")
+        };
+
+        assert!(defaults.is_overwrite && defaults.is_relocate_cdb);
+        assert!(!opted_out.is_overwrite && !opted_out.is_relocate_cdb);
+    }
+
+    #[test]
+    fn install_hook_opt_out_flags_clear_positive_fields() {
+        let Command::InstallHook(defaults) = parse(&["jw-clangd-index", "install-hook"]) else { panic!("not install-hook") };
+        let Command::InstallHook(cdb_only) = parse(&["jw-clangd-index", "install-hook", "--no-relocate-cdb"]) else {
+            panic!("not install-hook")
+        };
+
+        assert!(defaults.is_overwrite && defaults.is_relocate_cdb);
+        assert!(cdb_only.is_overwrite && !cdb_only.is_relocate_cdb);
     }
 
     #[test]

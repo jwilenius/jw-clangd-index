@@ -28,11 +28,17 @@ pub struct HookInstallRequest {
     pub is_force: bool,
 }
 
-/// The opt-out flags of `relocate` that the hook passes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The `relocate` behaviour the hook asks for; the hook passes an opt-out flag for each `false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HookRelocateFlags {
-    pub is_no_relocate_cdb: bool,
-    pub is_keep_existing: bool,
+    pub is_relocate_cdb: bool,
+    pub is_overwrite: bool,
+}
+
+impl Default for HookRelocateFlags {
+    fn default() -> Self {
+        Self { is_relocate_cdb: true, is_overwrite: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,8 +123,8 @@ fn hook_body(binary: &str, relocate_flags: HookRelocateFlags) -> String {
 }
 
 fn relocate_command_line(binary: &str, relocate_flags: HookRelocateFlags) -> String {
-    let cdb_flag = if relocate_flags.is_no_relocate_cdb { " --no-relocate-cdb" } else { "" };
-    let keep_flag = if relocate_flags.is_keep_existing { " --keep-existing" } else { "" };
+    let cdb_flag = if relocate_flags.is_relocate_cdb { "" } else { " --no-relocate-cdb" };
+    let keep_flag = if relocate_flags.is_overwrite { "" } else { " --keep-existing" };
     format!("{} relocate --to \"$PWD\"{cdb_flag}{keep_flag}", shell_quote(binary))
 }
 
@@ -169,8 +175,8 @@ mod tests {
 
     #[test]
     fn script_passes_opt_out_flags_when_asked() {
-        let cdb_flags = HookRelocateFlags { is_no_relocate_cdb: true, is_keep_existing: false };
-        let all_flags = HookRelocateFlags { is_no_relocate_cdb: true, is_keep_existing: true };
+        let cdb_flags = HookRelocateFlags { is_relocate_cdb: false, is_overwrite: true };
+        let all_flags = HookRelocateFlags { is_relocate_cdb: false, is_overwrite: false };
 
         assert!(hook_script(BINARY, cdb_flags).contains("relocate --to \"$PWD\" --no-relocate-cdb || true"));
         assert!(hook_script(BINARY, all_flags).contains("relocate --to \"$PWD\" --no-relocate-cdb --keep-existing || true"));
