@@ -90,6 +90,21 @@ It runs the absolute path of the installing binary in the foreground and never f
 It also offers commands to relocate on demand, from a chosen worktree, and to install the git hook.
 See [vscode/README.md](vscode/README.md) for its settings and how to build the `.vsix`.
 
+## Supported clangd versions
+
+Each shard is written back in the format version it was read in; the tool never upgrades a shard.
+
+| clangd | Index format version | `StringMap` probing the prediction assumes |
+| --- | --- | --- |
+| 16, 17 | 18 | not supported; shards are skipped |
+| 18, 19 | 19 | quadratic, as clangd 18 and 19 |
+| 20 to 22 | 20 | linear (LLVM 23's), although clangd 20 to 22 probe quadratically |
+| 23 | 20 | linear, as clangd 23 |
+| llvm main (2026-11) | 21 | linear |
+
+Formats 19 and 20 share one layout; 20 only adds a `RefKind` bit (`Call`) and a symbol flag (`HasDocComment`), and 21 adds `Symbol::Tags`.
+Verified end to end with clangd 19.1.2 and 23.1.0.
+
 ## How it works
 
 Each shard is a RIFF file whose chunks refer to a single string table, so rewriting the table's path strings (raw paths and `file:` URIs, matched only at path boundaries) relocates every symbol, reference and include-graph entry at once, and the shard is renamed after the xxh3 hash of its new path.
@@ -97,7 +112,7 @@ A self-check verifies that some file in each shard hashes to its original name, 
 git supplies the donor choice and the files deleted in the target, whose shards are skipped.
 The reindex prediction follows clangd's loader and its `shardIsStale` check and uses no git.
 The main files are the target compilation database's entries (`file` resolved against `directory`), or the shards flagged as translation units when the target has no database.
-A file belongs to the first main file whose include walk reaches it, in the order clangd loads them: the iteration order of the `llvm::StringMap` that holds the database's entries (LLVM 23), or path order without a database.
+A file belongs to the first main file whose include walk reaches it, in the order clangd loads them: the iteration order of the `llvm::StringMap` that holds the database's entries, with the probing of the clangd that wrote the newest shards (see above), or path order without a database.
 A reached file is stale when it is readable and the xxh3 digest of its contents differs from the digest in its own shard, or it has no shard; only the main file it belongs to is reindexed.
 A file outside the target root, such as a system header, has its shard in clangd's user index, `$XDG_CACHE_HOME/clangd/index` or else `~/.cache/clangd/index`, where the prediction reads it.
 clangd assigns each file to the nearest directory with a compilation database, so with an in-tree `build/compile_commands.json` the directory `build/` is a project of its own: the prediction reads the shards of files under it from `build/.cache/clangd/index`, and leaves its main files out of the root database's, as clangd's broadcast filter does.
@@ -106,10 +121,10 @@ A readable database entry without a shard is reported separately, as clangd inde
 ## Limitations
 
 - Generated headers are compared like any other file, so a missing generated header counts as not stale until the build creates it, and clangd only notices it changed when it reindexes later.
-- Only clangd index format versions 20 and 21 (clangd 23 and llvm main as of 2026-11) are relocated; shards of other versions are skipped.
+- Only clangd index format versions 19, 20 and 21 (clangd 18 to 23 and llvm main as of 2026-11) are relocated; shards of other versions are skipped.
 - Only the target root's index is relocated, not the donor's `build/.cache/clangd/index`, so files under an in-tree `build/`, such as generated headers, have no shard in the target and their main files are reindexed.
 - Without a usable compilation database clangd reindexes nothing; the prediction then walks the index's translation units and is labelled as holding once a database exists.
-- The predicted owner of a file shared by several translation units assumes LLVM 23's `StringMap` hashing and probing; a clangd built against a different implementation can pick another owner.
+- The predicted owner of a file shared by several translation units assumes the `StringMap` probing of the table above; clangd 20 to 22, which write format 20 but probe quadratically, or a clangd built against a different implementation can pick another owner.
 - A file outside the target root is looked up in the user index even when clangd would store it with another project, such as an out-of-tree build directory with its own compilation database.
 - Relocated compilation databases are pretty-printed with object keys sorted.
 
@@ -121,7 +136,7 @@ Scripts in the shared script library (`~/projects/ai-config/tmp/script-library/`
 - `clangd-background-index-run.py` drives clangd over LSP until its background index is idle and lists the indexed files.
 - `clangd-index-relocate-e2e.py` runs the end-to-end checks (unchanged worktree, edited header plus new TU, semantic `diff` against a fresh index, `install-hook` with `git worktree add`) and prints a JSON summary.
 - `clangd-index-relocate-timing.py` times `relocate` into fresh worktrees of an indexed repo.
-- `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
+- `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone (`--llvm-repo`) or raw files of a commit (`--raw-base`) and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
 
 Run clangd with `XDG_CACHE_HOME` in a scratch directory, so the user index in `~/.cache` stays untouched.
 
