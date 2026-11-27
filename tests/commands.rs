@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{
-    CDB_RELATIVE_PATH, HEADER_SHARD, NO_CACHE_HOME, SAMPLE_ROOT, add_worktree, create_committed_repo, create_indexed_repo, fixture_dir,
-    git, git_output, isolate_git_env, read_fixture, with_version,
+    ALL_SHARDS, CDB_RELATIVE_PATH, HEADER_SHARD, NO_CACHE_HOME, SAMPLE_ROOT, TU_SHARD, add_worktree, create_committed_repo,
+    create_indexed_repo, fixture_dir, git, git_output, isolate_git_env, read_fixture, v19_fixture_dir, with_version,
 };
 use jw_clangd_index::format::string_table::TableCompression;
 use jw_clangd_index::hook::HOOK_MARKER;
@@ -310,13 +310,13 @@ fn relocate_fails_without_indexed_donor() {
     assert_contains(&run.stderr, "pass --from DONOR_ROOT");
 }
 
-/// The fixture index relocated to [`DIFF_TARGET_ROOT`] plus `extra_mappings`, in `temp/b`.
-fn relocated_fixture_index(temp: &TempDir, extra_mappings: &[RootMapping]) -> PathBuf {
+/// The fixture index in `fixtures` relocated to [`DIFF_TARGET_ROOT`] plus `extra_mappings`, in `temp/b`.
+fn relocated_fixture_index(temp: &TempDir, fixtures: &Path, extra_mappings: &[RootMapping]) -> PathBuf {
     let root_mapping = RootMapping { old_root: SAMPLE_ROOT.as_bytes().to_vec(), new_root: DIFF_TARGET_ROOT.as_bytes().to_vec() };
     let mappings: Vec<RootMapping> = std::iter::once(root_mapping).chain(extra_mappings.iter().cloned()).collect();
     let target_dir = temp.path().join("b");
     relocate_index(&IndexRelocationRequest {
-        donor_dir: fixture_dir(),
+        donor_dir: fixtures.to_path_buf(),
         target_dir: target_dir.clone(),
         path_map: PathMap::new(&mappings).unwrap(),
         compression: TableCompression::Default,
@@ -328,8 +328,7 @@ fn relocated_fixture_index(temp: &TempDir, extra_mappings: &[RootMapping]) -> Pa
     target_dir
 }
 
-fn run_diff(temp: &TempDir, dir_b: &Path, extra_args: &[&str]) -> ToolRun {
-    let dir_a = fixture_dir();
+fn run_diff(temp: &TempDir, dir_a: &Path, dir_b: &Path, extra_args: &[&str]) -> ToolRun {
     let map = format!("{SAMPLE_ROOT}={DIFF_TARGET_ROOT}");
     let mut args = vec!["diff", dir_a.to_str().unwrap(), dir_b.to_str().unwrap(), "--map", &map];
     args.extend_from_slice(extra_args);
@@ -339,22 +338,57 @@ fn run_diff(temp: &TempDir, dir_b: &Path, extra_args: &[&str]) -> ToolRun {
 #[test]
 fn diff_finds_relocated_index_equal() {
     let temp = TempDir::new().unwrap();
-    let dir_b = relocated_fixture_index(&temp, &[]);
+    let dir_b = relocated_fixture_index(&temp, &fixture_dir(), &[]);
 
-    let run = run_diff(&temp, &dir_b, &[]);
+    let run = run_diff(&temp, &fixture_dir(), &dir_b, &[]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}{}", run.stdout, run.stderr);
     assert_eq!(run.stdout, "indexes are equal: 3 shards compared, 0 differ, 0 only in A, 0 only in B\n");
 }
 
 #[test]
+fn diff_finds_relocated_v19_index_equal() {
+    let temp = TempDir::new().unwrap();
+    let dir_b = relocated_fixture_index(&temp, &v19_fixture_dir(), &[]);
+
+    let run = run_diff(&temp, &v19_fixture_dir(), &dir_b, &[]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.stdout, "indexes are equal: 3 shards compared, 0 differ, 0 only in A, 0 only in B\n");
+}
+
+#[test]
+fn diff_tells_v19_and_v20_shards_of_same_files_apart() {
+    let temp = TempDir::new().unwrap();
+
+    let run = run_tool(temp.path(), &["diff", fixture_dir().to_str().unwrap(), v19_fixture_dir().to_str().unwrap(), "--ignore-command"]);
+
+    assert_eq!(run.exit_code, DIFFERENT_EXIT_CODE, "{}{}", run.stdout, run.stderr);
+    assert_contains(&run.stdout, &format!("differs:   {TU_SHARD} ("));
+}
+
+#[test]
+fn dump_prints_v19_shard_as_json() {
+    let temp = TempDir::new().unwrap();
+    let shard = v19_fixture_dir().join(TU_SHARD);
+
+    let run = run_tool(temp.path(), &["dump", shard.to_str().unwrap()]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let dump: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(dump["version"], 19);
+    assert_eq!(dump["command"]["directory"], format!("{SAMPLE_ROOT}/build"));
+    assert!(dump["symbols"].as_array().unwrap().iter().any(|symbol| symbol["name"] == "local_helper0"));
+}
+
+#[test]
 fn diff_names_differing_command_unless_ignored() {
     let temp = TempDir::new().unwrap();
     let gcc_mapping = RootMapping { old_root: b"/usr/lib/gcc".to_vec(), new_root: b"/opt/gcc".to_vec() };
-    let dir_b = relocated_fixture_index(&temp, &[gcc_mapping]);
+    let dir_b = relocated_fixture_index(&temp, &fixture_dir(), &[gcc_mapping]);
 
-    let run = run_diff(&temp, &dir_b, &[]);
-    let ignoring_run = run_diff(&temp, &dir_b, &["--ignore-command"]);
+    let run = run_diff(&temp, &fixture_dir(), &dir_b, &[]);
+    let ignoring_run = run_diff(&temp, &fixture_dir(), &dir_b, &["--ignore-command"]);
 
     assert_eq!(run.exit_code, DIFFERENT_EXIT_CODE, "{}{}", run.stdout, run.stderr);
     assert_contains(&run.stdout, "differs:   tu0.cpp.");
@@ -365,12 +399,11 @@ fn diff_names_differing_command_unless_ignored() {
 #[test]
 fn diff_skips_shards_of_unsupported_version() {
     let temp = TempDir::new().unwrap();
-    let dir_b = relocated_fixture_index(&temp, &[]);
+    let dir_b = relocated_fixture_index(&temp, &fixture_dir(), &[]);
     let dir_a = temp.path().join("a");
     fs::create_dir(&dir_a).unwrap();
-    for entry in fs::read_dir(fixture_dir()).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(entry.path(), dir_a.join(entry.file_name())).unwrap();
+    for file_name in ALL_SHARDS {
+        fs::copy(fixture_dir().join(file_name), dir_a.join(file_name)).unwrap();
     }
     fs::write(dir_a.join(HEADER_SHARD), with_version(&read_fixture(HEADER_SHARD), UNSUPPORTED_VERSION)).unwrap();
     let header_shard_b = dir_b.join(shard_names(&dir_b).into_iter().find(|name| name.starts_with(HEADER_SHARD_PREFIX)).unwrap());
@@ -391,11 +424,11 @@ fn diff_skips_shards_of_unsupported_version() {
 #[test]
 fn diff_reports_shard_missing_from_b() {
     let temp = TempDir::new().unwrap();
-    let dir_b = relocated_fixture_index(&temp, &[]);
+    let dir_b = relocated_fixture_index(&temp, &fixture_dir(), &[]);
     let header_shard = shard_names(&dir_b).into_iter().find(|name| name.starts_with(HEADER_SHARD_PREFIX)).unwrap();
     fs::remove_file(dir_b.join(header_shard)).unwrap();
 
-    let run = run_diff(&temp, &dir_b, &[]);
+    let run = run_diff(&temp, &fixture_dir(), &dir_b, &[]);
 
     assert_eq!(run.exit_code, DIFFERENT_EXIT_CODE);
     assert_contains(&run.stdout, &format!("only in A: {HEADER_SHARD_PREFIX}"));

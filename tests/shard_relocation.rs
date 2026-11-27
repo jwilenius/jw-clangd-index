@@ -3,11 +3,11 @@ mod common;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use common::{ALL_SHARDS, HEADER_SHARD, SAMPLE_ROOT, SYSTEM_SHARD, TU_SHARD, os, path_map, read_fixture, with_version};
+use common::{ALL_SHARDS, HEADER_SHARD, SAMPLE_ROOT, SYSTEM_SHARD, TU_SHARD, os, path_map, read_fixture, read_v19_fixture, with_version};
 use jw_clangd_index::format::bytes::{ByteReader, write_var};
 use jw_clangd_index::format::digest::{digest, digest_hex};
-use jw_clangd_index::format::riff::{parse_riff, write_riff};
-use jw_clangd_index::format::shard::{SYMBOLS_CHUNK, ShardFile, TAGS_VERSION};
+use jw_clangd_index::format::riff::{FourCc, parse_riff, write_riff};
+use jw_clangd_index::format::shard::{STRINGS_CHUNK, SYMBOLS_CHUNK, ShardFile, TAGS_VERSION};
 use jw_clangd_index::format::shard_contents::{ShardContents, decode_shard_contents};
 use jw_clangd_index::format::string_table::TableCompression;
 use jw_clangd_index::relocate::path_map::PathMap;
@@ -16,6 +16,7 @@ use jw_clangd_index::relocate::shard_relocation::{HashSelfCheckError, Unsupporte
 const MOVED_ROOT: &str = "/work/my proj+wt";
 const MOVED_ROOT_URI: &str = "file:///work/my%20proj%2Bwt/";
 const CLANGD_23_VERSION: u32 = 20;
+const CLANGD_19_VERSION: u32 = 19;
 const UNSUPPORTED_VERSION: u32 = 18;
 /// Needs two varint bytes, so a misplaced insert shifts every later field.
 const SYNTHETIC_TAGS: u32 = 0x1234;
@@ -238,6 +239,97 @@ fn rejects_unsupported_version_before_self_check() {
 
     let result =
         relocate_shard(&os("tu0.cpp.0000000000000000.idx"), &old_bytes, &path_map(SAMPLE_ROOT, MOVED_ROOT), TableCompression::Fast);
+
+    let error = result.unwrap_err();
+    assert_eq!(error.downcast_ref::<UnsupportedVersionError>().map(|unsupported| unsupported.version), Some(UNSUPPORTED_VERSION));
+}
+
+#[test]
+fn v19_fixtures_are_clangd_19_shards_that_decode() {
+    for file_name in ALL_SHARDS {
+        let contents = decode(&read_v19_fixture(file_name));
+
+        assert_eq!(contents.version, CLANGD_19_VERSION, "{file_name}");
+        assert!(!contents.sources.is_empty(), "{file_name}");
+    }
+    let tu = decode(&read_v19_fixture(TU_SHARD));
+    assert!(!tu.symbols.is_empty() && !tu.refs.is_empty());
+    assert!(tu.symbols.iter().all(|symbol| symbol.tags == 0));
+}
+
+#[test]
+fn finds_self_node_of_v19_shards() {
+    let identity_map = PathMap::new(&[]).unwrap();
+    for file_name in ALL_SHARDS {
+        let relocated = relocate_shard(&os(file_name), &read_v19_fixture(file_name), &identity_map, TableCompression::Fast).unwrap();
+
+        assert_eq!(relocated.file_name, os(file_name));
+    }
+}
+
+/// Every chunk of `bytes` but the string table, which relocation re-encodes.
+fn non_string_chunks(bytes: &[u8]) -> Vec<(FourCc, Vec<u8>)> {
+    let riff = parse_riff(bytes).unwrap();
+    riff.chunks.iter().filter(|chunk| &chunk.id != STRINGS_CHUNK).map(|chunk| (chunk.id, chunk.data.to_vec())).collect()
+}
+
+#[test]
+fn rewrites_unchanged_v19_shard_byte_for_byte() {
+    let identity_map = PathMap::new(&[]).unwrap();
+    for file_name in ALL_SHARDS {
+        let original = read_v19_fixture(file_name);
+
+        let rewritten = relocate_shard(&os(file_name), &original, &identity_map, TableCompression::Default).unwrap();
+
+        assert_eq!(non_string_chunks(&rewritten.bytes), non_string_chunks(&original), "{file_name}");
+        assert_eq!(ShardFile::parse(&rewritten.bytes).unwrap().strings, ShardFile::parse(&original).unwrap().strings, "{file_name}");
+    }
+    // This tool compressed the project shards' string tables, so its encoder reproduces them exactly;
+    // clangd's zlib compressed the system shard's.
+    for file_name in [TU_SHARD, HEADER_SHARD] {
+        let original = read_v19_fixture(file_name);
+
+        let rewritten = relocate_shard(&os(file_name), &original, &identity_map, TableCompression::Default).unwrap();
+
+        assert!(rewritten.bytes == original, "{file_name}");
+    }
+}
+
+#[test]
+fn relocates_v19_shard_keeping_its_version_and_every_chunk_but_strings() {
+    let forward = path_map(SAMPLE_ROOT, MOVED_ROOT);
+    let backward = path_map(MOVED_ROOT, SAMPLE_ROOT);
+    for file_name in ALL_SHARDS {
+        let original = read_v19_fixture(file_name);
+
+        let moved = relocate_shard(&os(file_name), &original, &forward, TableCompression::Fast).unwrap();
+        let restored = relocate_shard(&moved.file_name, &moved.bytes, &backward, TableCompression::Fast).unwrap();
+
+        assert_eq!(non_string_chunks(&moved.bytes), non_string_chunks(&original), "{file_name}");
+        assert_eq!(decode(&moved.bytes).version, CLANGD_19_VERSION, "{file_name}");
+        assert_eq!(decode(&restored.bytes), decode(&original), "{file_name}");
+        assert_eq!(restored.file_name, os(file_name));
+    }
+}
+
+#[test]
+fn rewrites_uris_and_compile_arguments_of_v19_shard() {
+    let moved =
+        relocate_shard(&os(TU_SHARD), &read_v19_fixture(TU_SHARD), &path_map(SAMPLE_ROOT, MOVED_ROOT), TableCompression::Fast).unwrap();
+
+    let contents = decode(&moved.bytes);
+    let command = contents.command.unwrap();
+    assert_eq!(command.directory, format!("{MOVED_ROOT}/build"));
+    assert!(command.arguments.contains(&format!("-I{MOVED_ROOT}/include")));
+    assert!(contents.sources.iter().any(|source| source.uri == format!("{MOVED_ROOT_URI}src/tu0.cpp")));
+    assert_eq!(moved.source_path, Path::new(&format!("{MOVED_ROOT}/src/tu0.cpp")));
+}
+
+#[test]
+fn rejects_v19_shard_patched_to_version_before_19() {
+    let old_bytes = with_version(&read_v19_fixture(TU_SHARD), UNSUPPORTED_VERSION);
+
+    let result = relocate_shard(&os(TU_SHARD), &old_bytes, &path_map(SAMPLE_ROOT, MOVED_ROOT), TableCompression::Fast);
 
     let error = result.unwrap_err();
     assert_eq!(error.downcast_ref::<UnsupportedVersionError>().map(|unsupported| unsupported.version), Some(UNSUPPORTED_VERSION));

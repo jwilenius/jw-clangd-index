@@ -1,5 +1,5 @@
-//! Real clangd 23.1.0 shards (format v20), relocated to neutral paths, and git repositories shared by the
-//! integration tests.
+//! Real clangd 23.1.0 (format v20) and clangd 19.1.2 (format v19) shards, relocated to neutral paths, and
+//! git repositories shared by the integration tests.
 //!
 //! Each test binary uses only some of these helpers.
 #![allow(dead_code)]
@@ -22,7 +22,9 @@ use jw_clangd_index::relocate::path_map::{PathMap, RootMapping};
 /// Only a string baked into the fixture bytes; the directory need not exist. clangd 23.1.0 wrote the
 /// fixtures for a sample project made with the shared scripts `make-sample-cpp-project.py` and
 /// `clangd-background-index-run.py`; `jw-clangd-index relocate` then moved its project root here and the
-/// clangd install in the compile command's `-resource-dir` to `/opt/clangd_23.1.0`.
+/// clangd install in the compile command's `-resource-dir` to `/opt/clangd_23.1.0`. The v19 fixtures
+/// are the same files of the same sample, written by clangd 19.1.2 and relocated the same way, with its
+/// install moved to `/opt/clangd_19.1.2`.
 pub const SAMPLE_ROOT: &str = "/work/sample";
 pub const TU_SHARD: &str = "tu0.cpp.FAA809B2FC5B892A.idx";
 pub const HEADER_SHARD: &str = "h0.h.1D5EEB2215EAE128.idx";
@@ -36,6 +38,15 @@ pub fn fixture_dir() -> PathBuf {
 
 pub fn read_fixture(file_name: &str) -> Vec<u8> {
     std::fs::read(fixture_dir().join(file_name)).unwrap()
+}
+
+/// The clangd 19.1.2 shards, named like [`ALL_SHARDS`].
+pub fn v19_fixture_dir() -> PathBuf {
+    fixture_dir().join("v19")
+}
+
+pub fn read_v19_fixture(file_name: &str) -> Vec<u8> {
+    std::fs::read(v19_fixture_dir().join(file_name)).unwrap()
 }
 
 pub fn os(file_name: &str) -> OsString {
