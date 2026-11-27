@@ -120,3 +120,7 @@ Scripts in the shared script library (`~/projects/ai-config/tmp/script-library/`
 - `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
 
 Run clangd with `XDG_CACHE_HOME` in a scratch directory, so the user index in `~/.cache` stays untouched.
+
+## License
+
+MIT, see `LICENSE`.

@@ -3,6 +3,7 @@
   "displayName": "jw-clangd-index",
   "description": "Relocates a clangd background index into new git worktrees, so clangd reindexes only the changed files.",
   "version": "0.1.0",
+  "license": "MIT",
   "publisher": "jw",
   "private": true,
   "engines": {

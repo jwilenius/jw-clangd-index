@@ -73,3 +73,7 @@ npm run package
 It runs `cargo build --release` in the parent directory, copies `../target/release/jw-clangd-index` into `bin/linux-x64/` and runs `vsce package --target linux-x64`, which type-checks and builds first and writes `jw-clangd-index-linux-x64-0.1.0.vsix`.
 Install it with `code --install-extension jw-clangd-index-linux-x64-0.1.0.vsix`.
 On macOS, build the CLI there and set `jwClangdIndex.path` or put the binary on `PATH`.
+
+## License
+
+MIT, see `LICENSE`.
