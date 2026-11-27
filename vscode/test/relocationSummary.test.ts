@@ -18,7 +18,8 @@ const SUMMARY_JSON = `{
   },
   "cdb": {
     "action": "written",
-    "path": "/work/feature/compile_commands.json"
+    "path": "/work/feature/compile_commands.json",
+    "reason": null
   },
   "reindex": {
     "has_cdb_main_files": true,
@@ -99,5 +100,11 @@ describe("describeRelocation", () => {
     const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "target_has_none", path: undefined } };
 
     assert.match(describeRelocation(summary), /; no compile_commands.json, so clangd ignores the index$/);
+  });
+
+  it("warns when the compilation database links outside the worktree", () => {
+    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "skipped_link", path: "/work/feature/compile_commands.json" } };
+
+    assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so it was not replaced$/);
   });
 });

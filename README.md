@@ -35,10 +35,11 @@ jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW].
 - Shards that already exist in the target are kept unless `--overwrite`.
 - `--relocate-cdb` also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten; an existing readable target database is kept unless `--overwrite`.
 - When the target's database path is a symlink, such as a tracked one into the build directory, the database is written where it points (creating the directory), so the symlink stays.
+- A database path that leads to the donor's database, or outside the target, is not written through; the summary reports it as skipped with the reason.
 - Without `--relocate-cdb` it warns when the target has no compilation database, because clangd then ignores the index.
 - `--dry-run` does everything in memory and writes nothing.
 - The summary on stdout lists donor, target, shard counts, failures, the compilation database action and the translation units clangd is predicted to reindex.
-- `--json` prints the summary as one JSON object instead: `is_dry_run`, `donor_root`, `donor_changed_files` (`null` with `--from`), `target_root`, `shards` (`relocated`, `kept_existing`, `skipped_deleted`, `skipped_unsupported_version`, `failed`), `cdb` (`action`: `target_has_one`, `target_has_none`, `donor_has_none`, `kept_existing` or `written`; `path` or `null`), `reindex` (`has_cdb_main_files`, all `reindexed_tus`, `stale_files`, all `main_files_without_shard`) and `elapsed_seconds`.
+- `--json` prints the summary as one JSON object instead: `is_dry_run`, `donor_root`, `donor_changed_files` (`null` with `--from`), `target_root`, `shards` (`relocated`, `kept_existing`, `skipped_deleted`, `skipped_unsupported_version`, `failed`), `cdb` (`action`: `target_has_one`, `target_has_none`, `donor_has_none`, `kept_existing`, `written` or `skipped_link`; `path` or `null`; `reason`, `points_at_donor_cdb` or `leaves_target` for `skipped_link`, else `null`), `reindex` (`has_cdb_main_files`, all `reindexed_tus`, `stale_files`, all `main_files_without_shard`) and `elapsed_seconds`.
 - A per-shard failure is a warning; a fatal error exits with 2.
 
 ### dump

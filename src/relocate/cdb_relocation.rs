@@ -3,10 +3,12 @@
 //! clangd uses a project's index only from the directory where it found the compilation database, and
 //! that file usually lives in an untracked build directory that a fresh worktree lacks.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use serde_json::Value;
 
 use super::path_map::PathMap;
@@ -28,6 +30,22 @@ pub enum CdbOutcome {
     KeptExisting(PathBuf),
     /// Written to this path (or would be, in a dry run).
     Written(PathBuf),
+    /// Not written, since `link` leads where this tool must not write; the link is kept as it is.
+    SkippedLink {
+        link: PathBuf,
+        reason: LinkSkipReason,
+    },
+}
+
+/// Why the target's database path is not written through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkSkipReason {
+    /// It leads to the donor's own database, which the write would replace.
+    PointsAtDonorCdb,
+    /// It leads outside the target root, or to where that cannot be told, such as through a dangling
+    /// directory symlink.
+    LeavesTarget,
 }
 
 pub struct CdbRelocationRequest<'a> {
@@ -51,7 +69,8 @@ fn is_readable_file(path: &Path) -> bool {
 /// database at any clangd location is kept unless `is_overwrite`.
 ///
 /// When that path is a symlink, often a tracked one into the build directory, the database is written
-/// where the symlink points, so the symlink stays and a dangling one starts to resolve.
+/// where the symlink points, so the symlink stays and a dangling one starts to resolve. A path that
+/// leads to the donor's database or outside the target is not written at all.
 pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     let Some(donor_relative_path) = find_cdb(request.donor_root) else {
         return Ok(CdbOutcome::DonorCdbMissing);
@@ -63,12 +82,17 @@ pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     }
 
     let donor_cdb = request.donor_root.join(donor_relative_path);
+    let target_link = request.target_root.join(donor_relative_path);
+    let target_cdb = resolve_symlinks(&target_link)?;
+    if let Some(reason) = find_link_skip_reason(&target_cdb, &donor_cdb, request.target_root)? {
+        return Ok(CdbOutcome::SkippedLink { link: target_link, reason });
+    }
+
     let json = fs::read(&donor_cdb).with_context(|| format!("reading {}", donor_cdb.display()))?;
     let rewritten = rewrite_cdb(&json, request.path_map).with_context(|| format!("rewriting {}", donor_cdb.display()))?;
     if rewritten.rewritten_strings == 0 {
         log::warn!("{}: no path is under a mapped donor root; the copy is unchanged", donor_cdb.display());
     }
-    let target_cdb = resolve_symlinks(&request.target_root.join(donor_relative_path))?;
     if request.is_dry_run {
         return Ok(CdbOutcome::Written(target_cdb));
     }
@@ -121,6 +145,41 @@ fn resolve_symlinks(path: &Path) -> Result<PathBuf> {
         resolved = link_dir.join(link_target);
     }
     bail!("{}: more than {MAX_SYMLINK_DEPTH} levels of symlinks", path.display())
+}
+
+/// `None` when `target_cdb`, the resolved write path, is inside the target and is not the donor's database.
+fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, target_root: &Path) -> Result<Option<LinkSkipReason>> {
+    let Some(real_target_cdb) = resolve_real_path(target_cdb) else {
+        return Ok(Some(LinkSkipReason::LeavesTarget));
+    };
+    let real_donor_cdb = fs::canonicalize(donor_cdb).with_context(|| format!("resolving {}", donor_cdb.display()))?;
+    if real_target_cdb == real_donor_cdb {
+        return Ok(Some(LinkSkipReason::PointsAtDonorCdb));
+    }
+    let real_target_root = fs::canonicalize(target_root).with_context(|| format!("resolving {}", target_root.display()))?;
+    if !real_target_cdb.starts_with(&real_target_root) {
+        return Ok(Some(LinkSkipReason::LeavesTarget));
+    }
+    Ok(None)
+}
+
+/// `path` with every symlink resolved, though its last components need not exist: the deepest existing
+/// ancestor is canonicalized and the missing names are appended. `None` when a missing part is a
+/// dangling symlink or `..`, so where it leads cannot be told.
+fn resolve_real_path(path: &Path) -> Option<PathBuf> {
+    let mut missing_names: Vec<&OsStr> = Vec::new();
+    let mut ancestor = path;
+    loop {
+        if let Ok(real_ancestor) = fs::canonicalize(ancestor) {
+            return Some(missing_names.iter().rev().fold(real_ancestor, |real_path, name| real_path.join(name)));
+        }
+        let is_present_but_unresolvable = fs::symlink_metadata(ancestor).is_ok();
+        if is_present_but_unresolvable {
+            return None;
+        }
+        missing_names.push(ancestor.file_name()?);
+        ancestor = ancestor.parent()?;
+    }
 }
 
 fn write_cdb(target_cdb: &Path, bytes: &[u8], is_overwrite: bool) -> Result<CdbOutcome> {
@@ -230,5 +289,49 @@ mod tests {
         assert_eq!(outcome, CdbOutcome::Written(written.clone()));
         assert!(fs::symlink_metadata(&target_link).unwrap().file_type().is_symlink());
         assert!(fs::read_to_string(&written).unwrap().contains("/y/wt/src/a.cpp"));
+    }
+
+    /// Relocates with overwriting into `target_root`, whose `build/compile_commands.json` is a symlink
+    /// to `link_target`.
+    fn relocate_through_link(donor_root: &Path, target_root: &Path, link_target: &Path) -> (PathBuf, CdbOutcome) {
+        let target_link = target_root.join("build/compile_commands.json");
+        fs::create_dir_all(target_link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(link_target, &target_link).unwrap();
+        let path_map = path_map();
+        let request = CdbRelocationRequest { donor_root, target_root, path_map: &path_map, is_overwrite: true, is_dry_run: false };
+
+        (target_link, relocate_cdb(&request).unwrap())
+    }
+
+    #[test]
+    fn skips_link_to_donor_cdb() {
+        let temp = tempfile::tempdir().unwrap();
+        let donor_root = temp.path().join("donor");
+        let target_root = temp.path().join("target");
+        write_donor_cdb(&donor_root);
+        let donor_cdb = donor_root.join("build/compile_commands.json");
+        let donor_json = fs::read(&donor_cdb).unwrap();
+
+        let (target_link, outcome) = relocate_through_link(&donor_root, &target_root, &donor_cdb);
+
+        assert_eq!(outcome, CdbOutcome::SkippedLink { link: target_link.clone(), reason: LinkSkipReason::PointsAtDonorCdb });
+        assert_eq!(fs::read(&donor_cdb).unwrap(), donor_json);
+        assert!(fs::symlink_metadata(&target_link).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn skips_link_that_leaves_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let donor_root = temp.path().join("donor");
+        let target_root = temp.path().join("target");
+        let outside_dir = temp.path().join("outside");
+        write_donor_cdb(&donor_root);
+        fs::create_dir_all(&outside_dir).unwrap();
+
+        let link_target = Path::new("../../outside/compile_commands.json");
+        let (target_link, outcome) = relocate_through_link(&donor_root, &target_root, link_target);
+
+        assert_eq!(outcome, CdbOutcome::SkippedLink { link: target_link, reason: LinkSkipReason::LeavesTarget });
+        assert_eq!(fs::read_dir(&outside_dir).unwrap().count(), 0);
     }
 }

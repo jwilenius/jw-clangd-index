@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use super::cdb_relocation::{CDB_RELATIVE_PATHS, CdbOutcome, CdbRelocationRequest, find_cdb, relocate_cdb};
+use super::cdb_relocation::{CDB_RELATIVE_PATHS, CdbOutcome, CdbRelocationRequest, LinkSkipReason, find_cdb, relocate_cdb};
 use super::donor_selection::find_donor;
 use super::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationReport, IndexRelocationRequest, relocate_index};
 use super::path_map::{PathMap, RootMapping};
@@ -91,8 +91,10 @@ pub struct ShardSummary {
 #[derive(Debug, Serialize)]
 pub struct CdbSummary<'a> {
     pub action: CdbAction,
-    /// The database kept or written (or that would be, in a dry run).
+    /// The database kept or written (or that would be, in a dry run), or the link skipped.
     pub path: Option<&'a Path>,
+    /// Why the link was skipped; `None` for the other actions.
+    pub reason: Option<LinkSkipReason>,
 }
 
 /// [`CdbOutcome`] without its path.
@@ -106,6 +108,7 @@ pub enum CdbAction {
     DonorHasNone,
     KeptExisting,
     Written,
+    SkippedLink,
 }
 
 #[derive(Debug, Serialize)]
@@ -291,9 +294,7 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
             is_overwrite: request.is_overwrite,
             is_dry_run: request.is_dry_run,
         })?;
-        if outcome == CdbOutcome::DonorCdbMissing {
-            log::warn!("the donor has no compile_commands.json to relocate; clangd will not use the index until the target has one");
-        }
+        warn_about_cdb(&outcome);
         return Ok(outcome);
     }
     let is_target_cdb_present = find_cdb(target_root).is_some();
@@ -305,6 +306,22 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
         );
     }
     Ok(CdbOutcome::NotRequested { is_target_cdb_present })
+}
+
+fn warn_about_cdb(outcome: &CdbOutcome) {
+    match outcome {
+        CdbOutcome::DonorCdbMissing => {
+            log::warn!("the donor has no compile_commands.json to relocate; clangd will not use the index until the target has one")
+        }
+        CdbOutcome::SkippedLink { link, reason } => {
+            log::warn!(
+                "{} {}, so the relocated compile_commands.json is not written through it",
+                link.display(),
+                describe_skip_reason(*reason)
+            )
+        }
+        CdbOutcome::NotRequested { .. } | CdbOutcome::KeptExisting(_) | CdbOutcome::Written(_) => {}
+    }
 }
 
 fn predict(
@@ -392,7 +409,7 @@ fn find_main_file_source<'a>(
 fn target_cdb_path(cdb: &CdbOutcome, target_root: &Path) -> Option<PathBuf> {
     match cdb {
         CdbOutcome::Written(cdb_path) | CdbOutcome::KeptExisting(cdb_path) => Some(cdb_path.clone()),
-        CdbOutcome::NotRequested { is_target_cdb_present: true } => {
+        CdbOutcome::NotRequested { is_target_cdb_present: true } | CdbOutcome::SkippedLink { .. } => {
             find_cdb(target_root).map(|relative_path| target_root.join(relative_path))
         }
         CdbOutcome::NotRequested { is_target_cdb_present: false } | CdbOutcome::DonorCdbMissing => None,
@@ -431,11 +448,16 @@ impl WorktreeRelocationReport {
 
 fn summarize_cdb(cdb: &CdbOutcome) -> CdbSummary<'_> {
     match cdb {
-        CdbOutcome::NotRequested { is_target_cdb_present: true } => CdbSummary { action: CdbAction::TargetHasOne, path: None },
-        CdbOutcome::NotRequested { is_target_cdb_present: false } => CdbSummary { action: CdbAction::TargetHasNone, path: None },
-        CdbOutcome::DonorCdbMissing => CdbSummary { action: CdbAction::DonorHasNone, path: None },
-        CdbOutcome::KeptExisting(path) => CdbSummary { action: CdbAction::KeptExisting, path: Some(path) },
-        CdbOutcome::Written(path) => CdbSummary { action: CdbAction::Written, path: Some(path) },
+        CdbOutcome::NotRequested { is_target_cdb_present: true } => {
+            CdbSummary { action: CdbAction::TargetHasOne, path: None, reason: None }
+        }
+        CdbOutcome::NotRequested { is_target_cdb_present: false } => {
+            CdbSummary { action: CdbAction::TargetHasNone, path: None, reason: None }
+        }
+        CdbOutcome::DonorCdbMissing => CdbSummary { action: CdbAction::DonorHasNone, path: None, reason: None },
+        CdbOutcome::KeptExisting(path) => CdbSummary { action: CdbAction::KeptExisting, path: Some(path), reason: None },
+        CdbOutcome::Written(path) => CdbSummary { action: CdbAction::Written, path: Some(path), reason: None },
+        CdbOutcome::SkippedLink { link, reason } => CdbSummary { action: CdbAction::SkippedLink, path: Some(link), reason: Some(*reason) },
     }
 }
 
@@ -479,6 +501,14 @@ fn describe_cdb(cdb: &CdbOutcome, is_dry_run: bool) -> String {
         CdbOutcome::KeptExisting(path) => format!("kept existing {}", path.display()),
         CdbOutcome::Written(path) if is_dry_run => format!("would write {}", path.display()),
         CdbOutcome::Written(path) => format!("wrote {}", path.display()),
+        CdbOutcome::SkippedLink { link, reason } => format!("not written: {} {}", link.display(), describe_skip_reason(*reason)),
+    }
+}
+
+fn describe_skip_reason(reason: LinkSkipReason) -> &'static str {
+    match reason {
+        LinkSkipReason::PointsAtDonorCdb => "links to the donor's database",
+        LinkSkipReason::LeavesTarget => "links outside the target",
     }
 }
 

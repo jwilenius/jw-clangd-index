@@ -1,7 +1,7 @@
 import * as path from "node:path";
 
 /** What `relocate` did with the compilation database. */
-const CDB_ACTIONS = ["target_has_one", "target_has_none", "donor_has_none", "kept_existing", "written"] as const;
+const CDB_ACTIONS = ["target_has_one", "target_has_none", "donor_has_none", "kept_existing", "written", "skipped_link"] as const;
 export type CdbAction = (typeof CDB_ACTIONS)[number];
 /** Actions after which the target has no compilation database, so clangd ignores the index. */
 const CDB_MISSING_ACTIONS: readonly CdbAction[] = ["target_has_none", "donor_has_none"];
@@ -147,10 +147,16 @@ export function describeRelocation(summary: RelocationSummary): string {
   const verb = summary.isDryRun ? "would relocate" : "relocated";
   const keptAndFailed = `${shards.keptExisting} kept, ${shards.failed} failed`;
   const reindex = `${summary.reindex.reindexedTus.length} TUs to reindex`;
-  const cdbWarning = isCdbMissing(summary.cdb.action) ? "; no compile_commands.json, so clangd ignores the index" : "";
+  const cdbWarning = describeCdbWarning(summary.cdb.action);
   return `${verb} ${shards.relocated} shards from ${path.basename(summary.donorRoot)} (${keptAndFailed}); ${reindex}${cdbWarning}`;
 }
 
-function isCdbMissing(action: CdbAction): boolean {
-  return CDB_MISSING_ACTIONS.includes(action);
+function describeCdbWarning(action: CdbAction): string {
+  if (CDB_MISSING_ACTIONS.includes(action)) {
+    return "; no compile_commands.json, so clangd ignores the index";
+  }
+  if (action === "skipped_link") {
+    return "; compile_commands.json links outside the worktree, so it was not replaced";
+  }
+  return "";
 }

@@ -151,6 +151,25 @@ fn relocate_prints_json_summary() {
 }
 
 #[test]
+fn relocate_never_writes_through_link_to_donor_cdb() {
+    let repos = indexed_repo_with_worktree();
+    let donor_cdb = repos.main.join(CDB_RELATIVE_PATH);
+    let donor_json = fs::read(&donor_cdb).unwrap();
+    let target_link = repos.worktree.join(CDB_RELATIVE_PATH);
+    fs::create_dir_all(target_link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&donor_cdb, &target_link).unwrap();
+
+    let run = run_tool(&repos.worktree, &["relocate", "--relocate-cdb", "--overwrite", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    let expected_cdb = serde_json::json!({ "action": "skipped_link", "path": target_link, "reason": "points_at_donor_cdb" });
+    assert_eq!(summary["cdb"], expected_cdb);
+    assert_eq!(fs::read(&donor_cdb).unwrap(), donor_json);
+    assert_contains(&run.stderr, "links to the donor's database");
+}
+
+#[test]
 fn relocate_json_has_nulls_for_a_given_donor_without_cdb_relocation() {
     let repos = indexed_repo_with_worktree();
 
