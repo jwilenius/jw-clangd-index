@@ -172,16 +172,22 @@ export class RelocationController {
     }
     this.runningRoots.add(root);
     try {
-      const result = await this.runRelocation(folder, root, donorRoot);
+      const result = await this.runRelocation(folder, root, donorRoot, origin === "automatic");
       await this.finishRelocation(result, origin);
     } finally {
       this.runningRoots.delete(root);
     }
   }
 
-  private async runRelocation(folder: vscode.WorkspaceFolder, root: string, donorRoot: string | undefined): Promise<RelocationResult> {
+  /** @param isKeepExisting true for automatic runs, so the shards clangd already wrote survive; a command the user started replaces them. */
+  private async runRelocation(
+    folder: vscode.WorkspaceFolder,
+    root: string,
+    donorRoot: string | undefined,
+    isKeepExisting: boolean,
+  ): Promise<RelocationResult> {
     const settings = this.readSettings(folder);
-    const args = buildRelocateArguments({ targetRoot: root, donorRoot, isRelocateCdb: settings.isRelocateCdb });
+    const args = buildRelocateArguments({ targetRoot: root, donorRoot, isRelocateCdb: settings.isRelocateCdb, isKeepExisting });
     const progressOptions = { location: vscode.ProgressLocation.Window, title: `${MESSAGE_PREFIX}: relocating index` };
     const processResult = await vscode.window.withProgress(progressOptions, () =>
       this.runCli({ binaryPath: this.resolveBinary(settings), args, cwd: root, timeoutMs: RELOCATE_TIMEOUT_MS }),

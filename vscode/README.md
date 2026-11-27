@@ -17,7 +17,7 @@ Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; the 
 - The threshold is half, not "any shard", because clangd may start indexing the new worktree before the check runs: its first shards must not cancel the relocation that saves reindexing everything.
   The race remains for a clangd that writes more than half the shards first; then run `Relocate index` by hand.
   The CLI picks the donor: the indexed worktree whose `HEAD` differs from the folder's in the fewest files.
-- It always passes `--keep-existing`, so shards and a compilation database that are already in the folder, such as shards clangd has written, are kept.
+- It passes `--keep-existing`, so shards and a compilation database that are already in the folder, such as shards clangd has written, are kept.
 - When more than 0 shards were relocated and the clangd extension (`llvm-vs-code-extensions.vscode-clangd`) is active, it runs `clangd.restart`, because a running clangd loads shards only at startup.
   In a multi-root workspace this restarts clangd once per folder that received shards.
   A clangd that is not running yet loads them when it starts.
@@ -31,7 +31,7 @@ Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; the 
 
 | Command                                 | Action                                                                                                                 |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `jw-clangd-index: Relocate index`       | Relocates into the chosen workspace folder now, from the automatically chosen donor, with `--keep-existing`.           |
+| `jw-clangd-index: Relocate index`       | Relocates into the chosen workspace folder now, from the automatically chosen donor.                                   |
 | `jw-clangd-index: Relocate index from…` | Picks the donor from the folder's other worktrees (`git worktree list --porcelain -z`, without bare or prunable ones). |
 | `jw-clangd-index: Install git hook`     | Runs `install-hook --repo <folder>`, plus `--no-relocate-cdb` when `jwClangdIndex.relocateCdb` is off.                 |
 
@@ -41,6 +41,7 @@ VS Code deletes the bundled binary's versioned extension directory on update, so
 With several workspace folders, each command first asks for the folder.
 The relocate commands relocate into the root of the worktree that holds the folder, and say so when that is not the folder itself; they refuse a folder outside git with a warning.
 The commands report success in a notification.
+The relocate commands do not pass `--keep-existing`, so they replace the folder's shards and compilation database, unless git tracks the database.
 
 ## Settings
 

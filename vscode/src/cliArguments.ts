@@ -3,6 +3,8 @@ export interface RelocateRequest {
   /** `undefined` lets the CLI pick the closest indexed worktree. */
   readonly donorRoot: string | undefined;
   readonly isRelocateCdb: boolean;
+  /** Keeps shards and a compilation database already in the target, such as shards clangd wrote, instead of replacing them. */
+  readonly isKeepExisting: boolean;
 }
 
 export interface InstallHookRequest {
@@ -10,11 +12,11 @@ export interface InstallHookRequest {
   readonly isRelocateCdb: boolean;
 }
 
-/** `relocate --json --keep-existing`, so shards clangd already wrote in the target are kept. */
 export function buildRelocateArguments(request: RelocateRequest): string[] {
+  const keepArgs = request.isKeepExisting ? ["--keep-existing"] : [];
   const donorArgs = request.donorRoot === undefined ? [] : ["--from", request.donorRoot];
   const cdbArgs = request.isRelocateCdb ? [] : ["--no-relocate-cdb"];
-  return ["relocate", "--json", "--keep-existing", "--to", request.targetRoot, ...donorArgs, ...cdbArgs];
+  return ["relocate", "--json", ...keepArgs, "--to", request.targetRoot, ...donorArgs, ...cdbArgs];
 }
 
 /** Without `--keep-existing`: the hook runs only in a newly added worktree, which has nothing to keep. */
