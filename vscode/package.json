@@ -85,5 +85,8 @@
     "esbuild": "^0.28.2",
     "prettier": "^3.10.1",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
   }
 }
