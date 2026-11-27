@@ -75,6 +75,15 @@ It runs `cargo build --release` in the parent directory, copies `../target/relea
 Install it with `code --install-extension jw-clangd-index-linux-x64-0.1.0.vsix`.
 On macOS, build the CLI there and set `jwClangdIndex.path` or put the binary on `PATH`.
 
+## Publishing (not yet done)
+
+- Nothing is published yet; the CI workflow (`.github/workflows/ci.yml`) only uploads the `.vsix` as artifact `jw-clangd-index-vsix`.
+- The extension id is `jwilenius.jw-clangd-index`: publisher `jwilenius` on the VS Code Marketplace, the same publisher as jw-differ.
+- Publishing would follow jw-differ: pushing a `vscode-vX.Y.Z` tag runs a workflow that publishes the tested `.vsix` with `vsce publish --oidc --packagePath <vsix>`.
+- That uses Marketplace Trusted Publishing, so no token is stored: publisher `jwilenius` needs a policy for repository `jw-clangd-index`, the workflow file and an environment `marketplace` limited to `vscode-v*` tags, and the job needs `id-token: write`.
+- Without Trusted Publishing, a repository secret `VSCE_PAT` (an Azure DevOps token with scope Marketplace: Manage) passed to `vsce publish` works instead.
+- The `.vsix` targets `linux-x64` only, so the Marketplace offers it to Linux x64 only.
+
 ## License
 
 MIT, see `LICENSE`.
