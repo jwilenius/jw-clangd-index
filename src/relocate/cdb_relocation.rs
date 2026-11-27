@@ -135,7 +135,8 @@ fn rewrite_json_strings(value: &mut Value, path_map: &PathMap) -> Result<usize> 
 /// directory holding it; `path` itself otherwise. The final path need not exist.
 fn resolve_symlinks(path: &Path) -> Result<PathBuf> {
     let mut resolved = path.to_path_buf();
-    for _ in 0..MAX_SYMLINK_DEPTH {
+    // One more check than hops, since the path after the last allowed hop must still be looked at.
+    for _ in 0..=MAX_SYMLINK_DEPTH {
         let is_symlink = fs::symlink_metadata(&resolved).is_ok_and(|metadata| metadata.file_type().is_symlink());
         if !is_symlink {
             return Ok(resolved);
@@ -308,6 +309,50 @@ mod tests {
         let request = CdbRelocationRequest { donor_root, target_root, path_map: &path_map, is_overwrite: true, is_dry_run: false };
 
         (target_link, relocate_cdb(&request).unwrap())
+    }
+
+    /// Relocates into `target_root`, whose root `compile_commands.json` reaches the dangling
+    /// `build/compile_commands.json` through a chain of `hops` relative symlinks.
+    fn relocate_through_link_chain(temp: &Path, hops: usize) -> Result<CdbOutcome> {
+        let donor_root = temp.join("donor");
+        let target_root = temp.join("target");
+        write_donor_cdb(&donor_root);
+        link_root_cdb_into_build(&donor_root);
+        fs::create_dir_all(&target_root).unwrap();
+        let link_names: Vec<String> =
+            std::iter::once("compile_commands.json".to_string()).chain((1..hops).map(|hop| format!("link-{hop}"))).collect();
+        let link_targets = link_names.iter().skip(1).map(String::as_str).chain(["build/compile_commands.json"]);
+        for (link_name, link_target) in link_names.iter().zip(link_targets) {
+            std::os::unix::fs::symlink(link_target, target_root.join(link_name)).unwrap();
+        }
+        let path_map = path_map();
+
+        relocate_cdb(&CdbRelocationRequest {
+            donor_root: &donor_root,
+            target_root: &target_root,
+            path_map: &path_map,
+            is_overwrite: true,
+            is_dry_run: false,
+        })
+    }
+
+    #[test]
+    fn follows_as_many_symlink_hops_as_linux() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let outcome = relocate_through_link_chain(temp.path(), MAX_SYMLINK_DEPTH).unwrap();
+
+        assert_eq!(outcome, CdbOutcome::Written(temp.path().join("target/build/compile_commands.json")));
+    }
+
+    #[test]
+    fn rejects_symlink_chain_beyond_hop_limit() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let error = relocate_through_link_chain(temp.path(), MAX_SYMLINK_DEPTH + 1).unwrap_err();
+
+        assert!(error.to_string().contains("levels of symlinks"), "{error:#}");
+        assert!(!temp.path().join("target/build").exists());
     }
 
     #[test]
