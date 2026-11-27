@@ -2,10 +2,10 @@
 //! files of a compilation database: `JSONCompilationDatabase::getAllFiles` iterates its `IndexByFile`
 //! map, and clangd's broadcast and loader keep that order.
 //!
-//! `llvm/lib/Support/StringMap.cpp` (LLVM 23): open addressing with linear probing over a power-of-two
-//! table that starts with 16 buckets, keyed by the low 32 bits of `xxh3_64bits`; after an insertion
-//! that leaves it more than 3/4 full it doubles, reinserting the entries in bucket order. Iteration
-//! visits the buckets in order.
+//! `llvm/lib/Support/StringMap.cpp`: open addressing over a power-of-two table that starts with 16
+//! buckets, keyed by the low 32 bits of `xxh3_64bits`; after an insertion that leaves it more than 3/4
+//! full it doubles, reinserting the entries in bucket order. Iteration visits the buckets in order.
+//! LLVM 18 to 22 probe quadratically, LLVM 23 linearly (see [`StringMapProbing`]).
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -17,20 +17,47 @@ const GROWTH_FACTOR: usize = 2;
 /// The table grows when `items * MAX_LOAD_DENOMINATOR > buckets * MAX_LOAD_NUMERATOR`.
 const MAX_LOAD_NUMERATOR: usize = 3;
 const MAX_LOAD_DENOMINATOR: usize = 4;
+/// The newest index format version that only clangd versions with quadratic probing write: 19 is written
+/// by clangd 18 and 19, 20 by clangd 20 to 23, of which only 23 probes linearly.
+const LAST_QUADRATIC_PROBING_FORMAT_VERSION: u32 = 19;
+
+/// How `StringMapImpl::LookupBucketFor` and `RehashTable` step from an occupied bucket to the next one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringMapProbing {
+    /// LLVM 22 and earlier: steps of 1, 2, 3 and so on.
+    Quadratic,
+    /// LLVM 23 and later: steps of 1.
+    Linear,
+}
+
+impl StringMapProbing {
+    /// The probing of the clangd that writes index format `version`; format 20 counts as LLVM 23's,
+    /// although clangd 20 to 22 write it too.
+    pub fn of_format_version(version: u32) -> StringMapProbing {
+        if version <= LAST_QUADRATIC_PROBING_FORMAT_VERSION { StringMapProbing::Quadratic } else { StringMapProbing::Linear }
+    }
+
+    fn next_step(self, step: usize) -> usize {
+        match self {
+            StringMapProbing::Quadratic => step + 1,
+            StringMapProbing::Linear => 1,
+        }
+    }
+}
 
 struct Entry {
     hash: u32,
     key: PathBuf,
 }
 
-/// `keys` in the order a `StringMap` filled with them in sequence iterates them; a repeated key keeps
-/// its first place.
-pub fn string_map_order(keys: Vec<PathBuf>) -> Vec<PathBuf> {
+/// `keys` in the order a `StringMap` probing by `probing` and filled with them in sequence iterates them;
+/// a repeated key keeps its first place.
+pub fn string_map_order(keys: Vec<PathBuf>, probing: StringMapProbing) -> Vec<PathBuf> {
     let mut buckets: Vec<Option<Entry>> = empty_table(INITIAL_BUCKETS);
     let mut items = 0;
     for key in keys {
         let hash = string_map_hash(&key);
-        let bucket = find_bucket(&buckets, hash, &key);
+        let bucket = find_bucket(&buckets, hash, &key, probing);
         if buckets[bucket].is_some() {
             continue;
         }
@@ -38,7 +65,7 @@ pub fn string_map_order(keys: Vec<PathBuf>) -> Vec<PathBuf> {
         items += 1;
         let is_overloaded = items * MAX_LOAD_DENOMINATOR > buckets.len() * MAX_LOAD_NUMERATOR;
         if is_overloaded {
-            buckets = rehash(buckets);
+            buckets = rehash(buckets, probing);
         }
     }
     buckets.into_iter().flatten().map(|entry| entry.key).collect()
@@ -54,27 +81,31 @@ fn empty_table(size: usize) -> Vec<Option<Entry>> {
 }
 
 /// `LookupBucketFor`: the bucket holding `key`, or the first empty one on its probe sequence.
-fn find_bucket(buckets: &[Option<Entry>], hash: u32, key: &Path) -> usize {
+fn find_bucket(buckets: &[Option<Entry>], hash: u32, key: &Path, probing: StringMapProbing) -> usize {
     let mask = buckets.len() - 1;
     let mut bucket = hash as usize & mask;
+    let mut step = 1;
     while let Some(entry) = &buckets[bucket] {
         let is_match = entry.hash == hash && entry.key == key;
         if is_match {
             return bucket;
         }
-        bucket = (bucket + 1) & mask;
+        bucket = (bucket + step) & mask;
+        step = probing.next_step(step);
     }
     bucket
 }
 
 /// `RehashTable`: entries move to a table twice the size in their old bucket order.
-fn rehash(buckets: Vec<Option<Entry>>) -> Vec<Option<Entry>> {
+fn rehash(buckets: Vec<Option<Entry>>, probing: StringMapProbing) -> Vec<Option<Entry>> {
     let mut grown = empty_table(buckets.len() * GROWTH_FACTOR);
     let mask = grown.len() - 1;
     for entry in buckets.into_iter().flatten() {
         let mut bucket = entry.hash as usize & mask;
+        let mut step = 1;
         while grown[bucket].is_some() {
-            bucket = (bucket + 1) & mask;
+            bucket = (bucket + step) & mask;
+            step = probing.next_step(step);
         }
         grown[bucket] = Some(entry);
     }
@@ -82,18 +113,25 @@ fn rehash(buckets: Vec<Option<Entry>>) -> Vec<Option<Entry>> {
 }
 
 /// Expected order from real LLVM: `llvm-stringmap-order/run.py` in the shared script library builds
-/// `llvm/lib/Support/StringMap.cpp`, `xxhash.cpp` and `Path.cpp` of LLVM 23 (ea7d852a) into a driver
-/// that fills a `StringMap` the way `JSONCompilationDatabase` does.
+/// `llvm/lib/Support/StringMap.cpp`, `xxhash.cpp` and `Path.cpp` of LLVM 19 (19.1.2, 7ba7d8e2) and
+/// LLVM 23 (ea7d852a) into a driver that fills a `StringMap` the way `JSONCompilationDatabase` does.
 #[cfg(test)]
 pub(crate) mod golden {
     use std::path::PathBuf;
+
+    use super::StringMapProbing;
 
     /// The driver's compilation database directory; its entries are `../src/tu<i>.cpp`,
     /// `/work/proj/src/./tu<i>.cpp` and `/work/proj/src/tu<i>.cpp` in turn for `i` in `0..ENTRY_COUNT`,
     /// then `/work/proj/src/tu0.cpp` once more.
     pub const CDB_DIRECTORY: &str = "/work/proj/build";
     pub const ENTRY_COUNT: usize = 50;
-    /// The `i` of each [`key`] in iteration order.
+    /// The `i` of each [`key`] in LLVM 19's iteration order.
+    pub const LLVM_19_ORDER: [usize; ENTRY_COUNT] = [
+        20, 42, 26, 19, 33, 17, 29, 12, 7, 46, 16, 4, 49, 37, 8, 0, 34, 18, 21, 2, 31, 1, 32, 48, 22, 5, 39, 15, 9, 38, 43, 44, 27, 40, 28,
+        35, 25, 14, 36, 3, 24, 6, 11, 47, 23, 45, 10, 13, 30, 41,
+    ];
+    /// The `i` of each [`key`] in LLVM 23's iteration order.
     pub const LLVM_23_ORDER: [usize; ENTRY_COUNT] = [
         20, 42, 26, 19, 33, 17, 29, 12, 7, 46, 16, 4, 49, 37, 8, 0, 34, 18, 2, 21, 31, 1, 32, 48, 22, 5, 39, 15, 9, 38, 43, 44, 27, 40, 28,
         35, 25, 36, 14, 3, 24, 6, 11, 47, 23, 45, 10, 13, 30, 41,
@@ -115,8 +153,13 @@ pub(crate) mod golden {
         files.map(|file| (CDB_DIRECTORY.to_string(), file)).collect()
     }
 
-    pub fn expected_order() -> Vec<PathBuf> {
-        LLVM_23_ORDER.iter().map(|&index| key(index)).collect()
+    /// The iteration order of a `StringMap` probing by `probing`.
+    pub fn expected_order(probing: StringMapProbing) -> Vec<PathBuf> {
+        let order = match probing {
+            StringMapProbing::Quadratic => LLVM_19_ORDER,
+            StringMapProbing::Linear => LLVM_23_ORDER,
+        };
+        order.iter().map(|&index| key(index)).collect()
     }
 }
 
@@ -125,6 +168,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    const LINEAR: StringMapProbing = StringMapProbing::Linear;
+    const QUADRATIC: StringMapProbing = StringMapProbing::Quadratic;
 
     fn candidates() -> impl Iterator<Item = PathBuf> {
         (0..).map(|index| PathBuf::from(format!("/p/src/tu{index}.cpp")))
@@ -150,7 +196,7 @@ mod tests {
     fn iterates_in_bucket_order_and_keeps_first_of_repeated_keys() {
         let keys = keys_in_distinct_buckets(5);
 
-        let order = string_map_order([keys.clone(), keys.clone()].concat());
+        let order = string_map_order([keys.clone(), keys.clone()].concat(), LINEAR);
 
         assert_eq!(order, sorted_by_bucket(&keys, INITIAL_BUCKETS));
     }
@@ -160,8 +206,8 @@ mod tests {
         // 12 of 16 buckets is exactly 3/4; the 13th key doubles the table.
         let keys = keys_in_distinct_buckets(13);
 
-        assert_eq!(string_map_order(keys[..12].to_vec()), sorted_by_bucket(&keys[..12], INITIAL_BUCKETS));
-        assert_eq!(string_map_order(keys.clone()), sorted_by_bucket(&keys, INITIAL_BUCKETS * GROWTH_FACTOR));
+        assert_eq!(string_map_order(keys[..12].to_vec(), LINEAR), sorted_by_bucket(&keys[..12], INITIAL_BUCKETS));
+        assert_eq!(string_map_order(keys.clone(), LINEAR), sorted_by_bucket(&keys, INITIAL_BUCKETS * GROWTH_FACTOR));
     }
 
     #[test]
@@ -169,22 +215,55 @@ mod tests {
         let first = candidates().next().unwrap();
         let colliding = candidates().skip(1).find(|key| bucket_of(key, INITIAL_BUCKETS) == bucket_of(&first, INITIAL_BUCKETS)).unwrap();
 
-        assert_eq!(string_map_order(vec![first.clone(), colliding.clone()]), vec![first.clone(), colliding.clone()]);
-        assert_eq!(string_map_order(vec![colliding.clone(), first.clone()]), vec![colliding, first]);
+        assert_eq!(string_map_order(vec![first.clone(), colliding.clone()], LINEAR), vec![first.clone(), colliding.clone()]);
+        assert_eq!(string_map_order(vec![colliding.clone(), first.clone()], LINEAR), vec![colliding, first]);
+    }
+
+    /// The first candidate whose 16-bucket home is `bucket`.
+    fn key_in_bucket(bucket: usize, excluded: &[&PathBuf]) -> PathBuf {
+        candidates().find(|key| bucket_of(key, INITIAL_BUCKETS) == bucket && !excluded.contains(&key)).unwrap()
+    }
+
+    #[test]
+    fn probes_third_colliding_key_one_or_three_buckets_on() {
+        // `a`, `b` and `c` share home `x`; `d` sits at `x + 3`. Linear probing puts `c` at `x + 2`,
+        // quadratic probing at `x + 1 + 2 = x + 3`, which `d` holds, then at `x + 6`.
+        let a = candidates().next().unwrap();
+        let home = bucket_of(&a, INITIAL_BUCKETS);
+        let b = key_in_bucket(home, &[&a]);
+        let c = key_in_bucket(home, &[&a, &b]);
+        let d = key_in_bucket((home + 3) % INITIAL_BUCKETS, &[]);
+        let keys = vec![d.clone(), a.clone(), b.clone(), c.clone()];
+        let bucket_order = |placed: [(&PathBuf, usize); 4]| {
+            let mut sorted = placed.to_vec();
+            sorted.sort_by_key(|&(_, offset)| (home + offset) % INITIAL_BUCKETS);
+            sorted.into_iter().map(|(key, _)| key.clone()).collect::<Vec<_>>()
+        };
+
+        assert_eq!(string_map_order(keys.clone(), LINEAR), bucket_order([(&a, 0), (&b, 1), (&c, 2), (&d, 3)]));
+        assert_eq!(string_map_order(keys, QUADRATIC), bucket_order([(&a, 0), (&b, 1), (&d, 3), (&c, 6)]));
     }
 
     #[test]
     fn matches_order_of_real_llvm_string_map() {
-        let keys = (0..golden::ENTRY_COUNT).chain([0]).map(golden::key).collect();
+        let keys: Vec<PathBuf> = (0..golden::ENTRY_COUNT).chain([0]).map(golden::key).collect();
 
-        assert_eq!(string_map_order(keys), golden::expected_order());
+        assert_eq!(string_map_order(keys.clone(), QUADRATIC), golden::expected_order(QUADRATIC));
+        assert_eq!(string_map_order(keys, LINEAR), golden::expected_order(LINEAR));
+    }
+
+    #[test]
+    fn takes_probing_of_clangd_that_writes_format_version() {
+        assert_eq!(StringMapProbing::of_format_version(19), QUADRATIC);
+        assert_eq!(StringMapProbing::of_format_version(20), LINEAR);
+        assert_eq!(StringMapProbing::of_format_version(21), LINEAR);
     }
 
     #[test]
     fn keeps_every_key_of_a_large_map() {
         let keys: Vec<PathBuf> = candidates().take(5000).collect();
 
-        let order = string_map_order(keys.clone());
+        let order = string_map_order(keys.clone(), QUADRATIC);
 
         assert_eq!(order.iter().collect::<HashSet<_>>(), keys.iter().collect::<HashSet<_>>());
         assert_eq!(order.len(), keys.len());

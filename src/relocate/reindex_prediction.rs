@@ -28,7 +28,7 @@ use serde::Deserialize;
 use super::index_relocation::{INDEX_RELATIVE_DIR, list_shards};
 use super::path_map::PathMap;
 use super::shard_relocation::{find_shard_self_node, shard_file_name};
-use super::string_map_order::string_map_order;
+use super::string_map_order::{StringMapProbing, string_map_order};
 use crate::format::digest::{FileDigest, digest};
 use crate::format::shard::{SOURCE_FLAG_IS_TU, SUPPORTED_VERSIONS, ShardFile};
 use crate::format::uri::file_uri_to_path;
@@ -41,6 +41,8 @@ pub struct SourceNode {
     pub digest: FileDigest,
     /// The other sources the shard lists: the files this one includes directly.
     pub includes: Vec<PathBuf>,
+    /// Index format version of the shard, which tells which clangd wrote it.
+    pub format_version: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -137,13 +139,21 @@ fn read_index_shard(path: &Path, index_dir: &Path, identity_map: &PathMap) -> Op
 
 /// The absolute main file of every entry in the compilation database at `cdb_path`, with `directory`
 /// and `file` mapped through `path_map` (unchanged when `None`) and `.`/`..` removed lexically, as clangd
-/// does; each file once, in the order clangd loads them (see [`string_map_order`]).
-pub fn load_cdb_main_files(cdb_path: &Path, path_map: Option<&PathMap>) -> Result<Vec<PathBuf>> {
+/// does; each file once, in the order a clangd whose `StringMap` probes by `probing` loads them (see
+/// [`string_map_order`]).
+pub fn load_cdb_main_files(cdb_path: &Path, path_map: Option<&PathMap>, probing: StringMapProbing) -> Result<Vec<PathBuf>> {
     let json = fs::read(cdb_path).with_context(|| format!("reading {}", cdb_path.display()))?;
     let entries: Vec<CdbEntry> = serde_json::from_slice(&json).with_context(|| format!("parsing {}", cdb_path.display()))?;
     let main_files =
         entries.iter().map(|entry| normalize_lexically(&mapped(&entry.directory, path_map).join(mapped(&entry.file, path_map)))).collect();
-    Ok(string_map_order(main_files))
+    Ok(string_map_order(main_files, probing))
+}
+
+/// The `StringMap` probing of the clangd that wrote the newest TU shards of `graph`; LLVM 23's when it
+/// has none. Header shards are left out: those from the user index may come from another clangd.
+pub fn graph_string_map_probing(graph: &IncludeGraph) -> StringMapProbing {
+    let newest_version = graph.nodes.values().filter(|node| node.is_tu).map(|node| node.format_version).max();
+    newest_version.map_or(StringMapProbing::Linear, StringMapProbing::of_format_version)
 }
 
 /// `main_files` without those under `nested_dirs`: clangd loads only the main files that the database's
@@ -244,7 +254,7 @@ fn read_source_node(shard_path: &Path, path_map: &PathMap) -> Result<Option<(Pat
         includes.extend(mapped_uri_path(&shard, node.uri, path_map)?);
     }
     let is_tu = self_node.flags & SOURCE_FLAG_IS_TU != 0;
-    Ok(Some((path, SourceNode { is_tu, digest: self_node.digest, includes })))
+    Ok(Some((path, SourceNode { is_tu, digest: self_node.digest, includes, format_version: shard.version })))
 }
 
 /// The path of the `file:` URI at string index `uri` after mapping; `None` for other URI schemes.
@@ -308,7 +318,9 @@ mod tests {
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
                 fs::write(&path, relative_path).unwrap();
                 let includes = includes.iter().map(|include| temp.path().join(include)).collect();
-                graph.nodes.insert(path, SourceNode { is_tu: *is_tu, digest: digest(relative_path.as_bytes()), includes });
+                let node =
+                    SourceNode { is_tu: *is_tu, digest: digest(relative_path.as_bytes()), includes, format_version: SUPPORTED_VERSIONS[0] };
+                graph.nodes.insert(path, node);
             }
             SourceTree { temp, graph }
         }
@@ -557,9 +569,22 @@ mod tests {
             .collect();
         fs::write(&cdb_path, serde_json::to_vec(&entries).unwrap()).unwrap();
 
-        let main_files = load_cdb_main_files(&cdb_path, None).unwrap();
+        for probing in [StringMapProbing::Quadratic, StringMapProbing::Linear] {
+            let main_files = load_cdb_main_files(&cdb_path, None, probing).unwrap();
 
-        assert_eq!(main_files, golden::expected_order());
+            assert_eq!(main_files, golden::expected_order(probing));
+        }
+    }
+
+    #[test]
+    fn takes_string_map_probing_of_newest_tu_shards() {
+        let mut graph = two_tu_tree().graph;
+        graph.nodes.values_mut().for_each(|node| node.format_version = if node.is_tu { 19 } else { 20 });
+
+        assert_eq!(graph_string_map_probing(&IncludeGraph::default()), StringMapProbing::Linear);
+        assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Quadratic);
+        graph.nodes.values_mut().find(|node| node.is_tu).unwrap().format_version = 20;
+        assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Linear);
     }
 
     #[test]
@@ -573,9 +598,9 @@ mod tests {
         fs::write(&cdb_path, cdb).unwrap();
         let path_map = PathMap::new(&[RootMapping { old_root: b"/x/proj".to_vec(), new_root: b"/y/wt".to_vec() }]).unwrap();
 
-        let main_files = load_cdb_main_files(&cdb_path, Some(&path_map)).unwrap();
+        let main_files = load_cdb_main_files(&cdb_path, Some(&path_map), StringMapProbing::Linear).unwrap();
 
-        let expected = string_map_order(vec![PathBuf::from("/y/wt/src/a.cpp"), PathBuf::from("/y/wt/src/b.cpp")]);
+        let expected = string_map_order(vec![PathBuf::from("/y/wt/src/a.cpp"), PathBuf::from("/y/wt/src/b.cpp")], StringMapProbing::Linear);
         assert_eq!(main_files, expected);
     }
 }

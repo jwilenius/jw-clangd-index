@@ -16,8 +16,8 @@ use super::donor_selection::find_donor;
 use super::index_relocation::{INDEX_RELATIVE_DIR, IndexRelocationReport, IndexRelocationRequest, relocate_index};
 use super::path_map::{PathMap, RootMapping};
 use super::reindex_prediction::{
-    IncludeGraph, ReindexPrediction, graph_tus, load_cdb_main_files, load_external_nodes, load_include_graph, load_nested_project_nodes,
-    predict_reindex, without_nested_main_files,
+    IncludeGraph, ReindexPrediction, graph_string_map_probing, graph_tus, load_cdb_main_files, load_external_nodes, load_include_graph,
+    load_nested_project_nodes, predict_reindex, without_nested_main_files,
 };
 use crate::format::string_table::TableCompression;
 use crate::git::GitRepo;
@@ -352,7 +352,7 @@ fn load_main_files(source: Option<MainFileSource>, graph: &IncludeGraph) -> Main
     let Some(source) = source else {
         return MainFiles { paths: graph_tus(graph), is_from_cdb: false };
     };
-    match load_cdb_main_files(&source.cdb_path, source.path_map) {
+    match load_cdb_main_files(&source.cdb_path, source.path_map, graph_string_map_probing(graph)) {
         Ok(paths) => MainFiles { paths, is_from_cdb: true },
         Err(error) => {
             log::warn!("predicting from the TUs in the index instead: {error:#}");
