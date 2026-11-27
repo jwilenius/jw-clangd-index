@@ -23,9 +23,16 @@ pub struct HookInstallRequest {
     pub repo: PathBuf,
     /// Absolute path of the `jw-clangd-index` executable the hook runs.
     pub binary: PathBuf,
-    pub is_relocate_cdb: bool,
+    pub relocate_flags: HookRelocateFlags,
     /// Replace a `post-checkout` hook this tool did not write.
     pub is_force: bool,
+}
+
+/// The opt-out flags of `relocate` that the hook passes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HookRelocateFlags {
+    pub is_no_relocate_cdb: bool,
+    pub is_keep_existing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +54,7 @@ pub fn install_hook(request: &HookInstallRequest) -> Result<HookInstallReport> {
     let hooks_dir = find_hooks_dir(&git)?;
     let hook_path = hooks_dir.join(HOOK_NAME);
     let binary = request.binary.to_str().with_context(|| format!("executable path {} is not UTF-8", request.binary.display()))?;
-    let script = hook_script(binary, request.is_relocate_cdb);
+    let script = hook_script(binary, request.relocate_flags);
 
     let decision = decide_hook_install(read_existing_hook(&hook_path)?.as_deref(), request.is_force);
     if decision == HookInstallDecision::Refuse {
@@ -55,7 +62,7 @@ pub fn install_hook(request: &HookInstallRequest) -> Result<HookInstallReport> {
             "{} exists and was not installed by jw-clangd-index; add these lines to it yourself, \
              or pass --force to replace it:\n{}",
             hook_path.display(),
-            hook_body(binary, request.is_relocate_cdb)
+            hook_body(binary, request.relocate_flags)
         );
     }
     fs::create_dir_all(&hooks_dir).with_context(|| format!("creating {}", hooks_dir.display()))?;
@@ -86,15 +93,15 @@ pub fn decide_hook_install(existing_hook: Option<&[u8]>, is_force: bool) -> Hook
     }
 }
 
-pub fn hook_script(binary: &str, is_relocate_cdb: bool) -> String {
-    format!("#!/bin/sh\n{HOOK_MARKER}\n{}", hook_body(binary, is_relocate_cdb))
+pub fn hook_script(binary: &str, relocate_flags: HookRelocateFlags) -> String {
+    format!("#!/bin/sh\n{HOOK_MARKER}\n{}", hook_body(binary, relocate_flags))
 }
 
 /// git passes the previous `HEAD` as `$1`; it is the null object ID only on a fresh checkout, so branch
 /// switches do nothing. Of the fresh checkouts only `git worktree add` creates a linked worktree, whose
 /// git directory differs from the common one; a clone or the first checkout of an unborn branch in
 /// the main worktree has no other worktree to take an index from. The hook never fails the checkout.
-fn hook_body(binary: &str, is_relocate_cdb: bool) -> String {
+fn hook_body(binary: &str, relocate_flags: HookRelocateFlags) -> String {
     let null_ids: Vec<String> = OBJECT_ID_LENGTHS.iter().map(|&length| "0".repeat(length)).collect();
     format!(
         "# Relocates the clangd index of the closest worktree into a newly created linked worktree.\n\
@@ -105,13 +112,14 @@ fn hook_body(binary: &str, is_relocate_cdb: bool) -> String {
          [ \"$(git rev-parse --absolute-git-dir)\" = \"$(git rev-parse --path-format=absolute --git-common-dir)\" ] && exit 0\n\
          {} || true\n",
         null_ids.join("|"),
-        relocate_command_line(binary, is_relocate_cdb)
+        relocate_command_line(binary, relocate_flags)
     )
 }
 
-fn relocate_command_line(binary: &str, is_relocate_cdb: bool) -> String {
-    let cdb_flag = if is_relocate_cdb { " --relocate-cdb" } else { "" };
-    format!("{} relocate --to \"$PWD\"{cdb_flag}", shell_quote(binary))
+fn relocate_command_line(binary: &str, relocate_flags: HookRelocateFlags) -> String {
+    let cdb_flag = if relocate_flags.is_no_relocate_cdb { " --no-relocate-cdb" } else { "" };
+    let keep_flag = if relocate_flags.is_keep_existing { " --keep-existing" } else { "" };
+    format!("{} relocate --to \"$PWD\"{cdb_flag}{keep_flag}", shell_quote(binary))
 }
 
 /// `text` as one single-quoted POSIX shell word.
@@ -147,7 +155,7 @@ mod tests {
 
     #[test]
     fn script_runs_relocation_only_for_null_previous_head() {
-        let script = hook_script(BINARY, false);
+        let script = hook_script(BINARY, HookRelocateFlags::default());
 
         assert!(script.starts_with("#!/bin/sh\n"));
         assert!(script.contains(HOOK_MARKER));
@@ -160,8 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn script_passes_relocate_cdb_when_asked() {
-        assert!(hook_script(BINARY, true).contains("relocate --to \"$PWD\" --relocate-cdb || true"));
+    fn script_passes_opt_out_flags_when_asked() {
+        let cdb_flags = HookRelocateFlags { is_no_relocate_cdb: true, is_keep_existing: false };
+        let all_flags = HookRelocateFlags { is_no_relocate_cdb: true, is_keep_existing: true };
+
+        assert!(hook_script(BINARY, cdb_flags).contains("relocate --to \"$PWD\" --no-relocate-cdb || true"));
+        assert!(hook_script(BINARY, all_flags).contains("relocate --to \"$PWD\" --no-relocate-cdb --keep-existing || true"));
     }
 
     #[test]
@@ -176,7 +188,7 @@ mod tests {
 
     #[test]
     fn replaces_own_hook_without_force() {
-        let own_hook = hook_script(BINARY, false);
+        let own_hook = hook_script(BINARY, HookRelocateFlags::default());
 
         assert_eq!(decide_hook_install(Some(own_hook.as_bytes()), false), HookInstallDecision::ReplaceOwn);
     }

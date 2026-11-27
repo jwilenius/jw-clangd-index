@@ -106,7 +106,7 @@ fn relocate_chooses_donor_skips_deleted_file_and_relocates_cdb() {
     git(&repos.worktree, &["rm", "--quiet", "include/lib/h0.h"]);
     fs::write(repos.worktree.join("include/lib/h1.h"), "// changed\n").unwrap();
 
-    let run = run_tool(&repos.worktree, &["relocate", "--relocate-cdb"]);
+    let run = run_tool(&repos.worktree, &["relocate"]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     assert_contains(&run.stdout, &format!("donor:    {} (closest worktree, 0 files differ)", repos.main.display()));
@@ -127,7 +127,7 @@ fn relocate_prints_json_summary() {
     let repos = indexed_repo_with_worktree();
     git(&repos.worktree, &["rm", "--quiet", "include/lib/h0.h"]);
 
-    let run = run_tool(&repos.worktree, &["relocate", "--relocate-cdb", "--json"]);
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
@@ -151,6 +151,27 @@ fn relocate_prints_json_summary() {
 }
 
 #[test]
+fn relocate_replaces_existing_shards_and_cdb_unless_keep_existing() {
+    let repos = indexed_repo_with_worktree();
+    let target_cdb = repos.worktree.join(CDB_RELATIVE_PATH);
+    assert_eq!(run_tool(&repos.worktree, &["relocate"]).exit_code, SUCCESS_EXIT_CODE);
+    fs::write(&target_cdb, "[]\n").unwrap();
+
+    let kept_run = run_tool(&repos.worktree, &["relocate", "--keep-existing", "--json"]);
+    let kept_cdb = fs::read_to_string(&target_cdb).unwrap();
+    let replaced_run = run_tool(&repos.worktree, &["relocate", "--json"]);
+
+    let kept: serde_json::Value = serde_json::from_str(&kept_run.stdout).unwrap();
+    assert_eq!((&kept["shards"]["relocated"], &kept["shards"]["kept_existing"]), (&0.into(), &3.into()), "{kept}");
+    assert_eq!(kept["cdb"]["action"], "kept_existing");
+    assert_eq!(kept_cdb, "[]\n");
+    let replaced: serde_json::Value = serde_json::from_str(&replaced_run.stdout).unwrap();
+    assert_eq!((&replaced["shards"]["relocated"], &replaced["shards"]["kept_existing"]), (&3.into(), &0.into()), "{replaced}");
+    assert_eq!(replaced["cdb"]["action"], "written");
+    assert_contains(&fs::read_to_string(&target_cdb).unwrap(), &format!("{}/src/tu0.cpp", repos.worktree.display()));
+}
+
+#[test]
 fn relocate_never_writes_through_link_to_donor_cdb() {
     let repos = indexed_repo_with_worktree();
     let donor_cdb = repos.main.join(CDB_RELATIVE_PATH);
@@ -159,7 +180,7 @@ fn relocate_never_writes_through_link_to_donor_cdb() {
     fs::create_dir_all(target_link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&donor_cdb, &target_link).unwrap();
 
-    let run = run_tool(&repos.worktree, &["relocate", "--relocate-cdb", "--overwrite", "--json"]);
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
@@ -173,7 +194,7 @@ fn relocate_never_writes_through_link_to_donor_cdb() {
 fn relocate_json_has_nulls_for_a_given_donor_without_cdb_relocation() {
     let repos = indexed_repo_with_worktree();
 
-    let run = run_tool(&repos.worktree, &["relocate", "--json", "--from", repos.main.to_str().unwrap()]);
+    let run = run_tool(&repos.worktree, &["relocate", "--json", "--no-relocate-cdb", "--from", repos.main.to_str().unwrap()]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
@@ -188,14 +209,14 @@ fn relocate_dry_run_writes_nothing_and_warns_about_missing_cdb() {
     let repos = indexed_repo_with_worktree();
     fs::write(repos.worktree.join("src/tu0.cpp"), "// changed\n").unwrap();
 
-    let run = run_tool(&repos.base, &["relocate", "--dry-run", "--to", repos.worktree.to_str().unwrap()]);
+    let run = run_tool(&repos.base, &["relocate", "--dry-run", "--no-relocate-cdb", "--to", repos.worktree.to_str().unwrap()]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     assert_contains(&run.stdout, "dry run: nothing was written\n");
     assert_contains(&run.stdout, "3 relocated");
     assert_contains(&run.stdout, "cdb:      not relocated; target has none\n");
     assert_contains(&run.stdout, "reindex:  1 TUs predicted once a compile database exists (");
-    assert_contains(&run.stderr, "--relocate-cdb");
+    assert_contains(&run.stderr, "drop --no-relocate-cdb");
     assert!(!repos.worktree.join(".cache").exists());
 }
 
@@ -239,7 +260,7 @@ fn relocate_reads_shards_of_external_headers_from_user_index() {
     for header in ["string", "vector"] {
         fs::write(include_dir.join(header), header).unwrap();
     }
-    let args = ["relocate", "--dry-run", "--relocate-cdb"];
+    let args = ["relocate", "--dry-run"];
 
     let run = run_tool(&repos.worktree, &args);
     let user_index_run = run_tool_with_cache_home(&repos.worktree, &args, &cache_home);
@@ -258,7 +279,7 @@ fn relocate_maps_donor_root_given_through_symlink() {
     create_indexed_repo(&main_link);
     add_worktree(&repos.main, &repos.worktree);
 
-    let run = run_tool(&repos.base, &["relocate", "--relocate-cdb", "--from", "main-link/", "--to", repos.worktree.to_str().unwrap()]);
+    let run = run_tool(&repos.base, &["relocate", "--from", "main-link/", "--to", repos.worktree.to_str().unwrap()]);
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     assert!(!run.stderr.contains("unchanged"), "{}", run.stderr);
@@ -382,19 +403,31 @@ fn installed_hook_relocates_into_new_worktree() {
     let repos = empty_repos();
     create_indexed_repo(&repos.main);
 
-    let install_run = run_tool(&repos.main, &["install-hook", "--relocate-cdb"]);
+    let install_run = run_tool(&repos.main, &["install-hook"]);
     add_worktree(&repos.main, &repos.worktree);
-    let reinstall_run = run_tool(&repos.main, &["install-hook", "--relocate-cdb"]);
+    let reinstall_run = run_tool(&repos.main, &["install-hook"]);
 
     assert_eq!(install_run.exit_code, SUCCESS_EXIT_CODE, "{}", install_run.stderr);
     assert_eq!(install_run.stdout, format!("installed {}\n", hook_path(&repos.main).display()));
     let hook = fs::read_to_string(hook_path(&repos.main)).unwrap();
     assert_contains(&hook, HOOK_MARKER);
-    assert_contains(&hook, "relocate --to \"$PWD\" --relocate-cdb || true");
+    assert_contains(&hook, "relocate --to \"$PWD\" || true");
     assert_eq!(fs::metadata(hook_path(&repos.main)).unwrap().permissions().mode() & PERMISSION_BITS, HOOK_MODE);
     assert_eq!(index_shard_names(&repos.worktree).len(), 3);
     assert!(repos.worktree.join(CDB_RELATIVE_PATH).is_file());
     assert_eq!(reinstall_run.stdout, format!("updated {}\n", hook_path(&repos.main).display()));
+}
+
+#[test]
+fn install_hook_passes_opt_out_flags_to_relocate() {
+    let repos = empty_repos();
+    create_indexed_repo(&repos.main);
+
+    let run = run_tool(&repos.main, &["install-hook", "--no-relocate-cdb", "--keep-existing"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let hook = fs::read_to_string(hook_path(&repos.main)).unwrap();
+    assert_contains(&hook, "relocate --to \"$PWD\" --no-relocate-cdb --keep-existing || true");
 }
 
 #[test]

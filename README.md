@@ -22,7 +22,7 @@ Requires git 2.36 or later (`git worktree list -z`).
 
 ```sh
 jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW]... \
-    [--compression fast|default|none] [--dry-run] [--overwrite] [--relocate-cdb] [--json]
+    [--compression fast|default|none] [--dry-run] [--keep-existing] [--no-relocate-cdb] [--json]
 ```
 
 - `--to` defaults to the worktree of the current directory.
@@ -32,11 +32,11 @@ jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW].
 - When the donor root as given (or as `git worktree list` prints it) goes through a symlink, paths under both forms are mapped.
 - A warning reports a relocation in which no shard path, or no compilation database string, was under a mapped root.
 - Shards of files deleted in the target (relative to the donor's `HEAD`) are not copied; a file removed only from the git index (`git rm --cached`) still exists and keeps its shard.
-- Shards that already exist in the target are kept unless `--overwrite`.
-- `--relocate-cdb` also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten; an existing readable target database is kept unless `--overwrite`.
+- Shards that already exist in the target are replaced; `--keep-existing` keeps them.
+- It also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten, unless `--no-relocate-cdb`; an existing readable target database is replaced, or kept with `--keep-existing`.
 - When the target's database path is a symlink, such as a tracked one into the build directory, the database is written where it points (creating the directory), so the symlink stays.
 - A database path that leads to the donor's database, or outside the target, is not written through; the summary reports it as skipped with the reason.
-- Without `--relocate-cdb` it warns when the target has no compilation database, because clangd then ignores the index.
+- With `--no-relocate-cdb` it warns when the target has no compilation database, because clangd then ignores the index.
 - `--dry-run` does everything in memory and writes nothing.
 - The summary on stdout lists donor, target, shard counts, failures, the compilation database action and the translation units clangd is predicted to reindex.
 - `--json` prints the summary as one JSON object instead: `is_dry_run`, `donor_root`, `donor_changed_files` (`null` with `--from`), `target_root`, `shards` (`relocated`, `kept_existing`, `skipped_deleted`, `skipped_unsupported_version`, `failed`), `cdb` (`action`: `target_has_one`, `target_has_none`, `donor_has_none`, `kept_existing`, `written` or `skipped_link`; `path` or `null`; `reason`, `points_at_donor_cdb` or `leaves_target` for `skipped_link`, else `null`), `reindex` (`has_cdb_main_files`, all `reindexed_tus`, `stale_files`, all `main_files_without_shard`) and `elapsed_seconds`.
@@ -65,19 +65,20 @@ Use it to check a relocated index against one clangd built in the target itself.
 ### install-hook
 
 ```sh
-jw-clangd-index install-hook [--repo PATH] [--relocate-cdb] [--force]
+jw-clangd-index install-hook [--repo PATH] [--no-relocate-cdb] [--keep-existing] [--force]
 ```
 
 Writes a `post-checkout` hook into `core.hooksPath`, or else the `hooks` directory of the repository's common git directory, which all worktrees share.
 Works in a bare repository too, unless `core.hooksPath` is relative.
 A hook that this tool did not write is never replaced unless `--force`; the error shows the line to add to it instead.
 Installing again replaces this tool's own hook.
+`--no-relocate-cdb` and `--keep-existing` make the hook pass the same flags to `relocate`.
 
 ## Hook workflow
 
 1. Index the main worktree once with clangd.
-2. Run `jw-clangd-index install-hook --relocate-cdb` in the repository.
-3. Every `git worktree add` now runs `jw-clangd-index relocate --to <new worktree> --relocate-cdb` before it returns.
+2. Run `jw-clangd-index install-hook` in the repository.
+3. Every `git worktree add` now runs `jw-clangd-index relocate --to <new worktree>` before it returns.
 
 The hook acts only when git reports a null previous `HEAD` in a linked worktree, which happens only for `git worktree add`.
 Branch switches, clones and the first checkout in a main worktree do nothing.
@@ -119,7 +120,7 @@ Scripts in the shared script library (`~/projects/ai-config/tmp/script-library/`
 - `make-sample-cpp-project.py` builds a synthetic C++ git repo with a compilation database.
 - `clangd-background-index-run.py` drives clangd over LSP until its background index is idle and lists the indexed files.
 - `clangd-index-relocate-e2e.py` runs the end-to-end checks (unchanged worktree, edited header plus new TU, semantic `diff` against a fresh index, `install-hook` with `git worktree add`) and prints a JSON summary.
-- `clangd-index-relocate-timing.py` times `relocate --relocate-cdb` into fresh worktrees of an indexed repo.
+- `clangd-index-relocate-timing.py` times `relocate` into fresh worktrees of an indexed repo.
 - `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
 
 Run clangd with `XDG_CACHE_HOME` in a scratch directory, so the user index in `~/.cache` stays untouched.

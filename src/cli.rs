@@ -13,7 +13,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use crate::format::shard::ShardFile;
 use crate::format::shard_contents::decode_shard_contents;
 use crate::format::string_table::TableCompression;
-use crate::hook::{HookInstallRequest, install_hook};
+use crate::hook::{HookInstallRequest, HookRelocateFlags, install_hook};
 use crate::index_diff::{IndexDiffRequest, diff_indexes};
 use crate::relocate::path_map::{PathMap, RootMapping, canonical_root_mapping};
 use crate::relocate::worktree_relocation::{WorktreeRelocationRequest, relocate_worktree};
@@ -65,12 +65,12 @@ struct RelocateArgs {
     /// Report what would happen without writing anything.
     #[arg(long = "dry-run")]
     is_dry_run: bool,
-    /// Replace target shards and compilation database that already exist.
-    #[arg(long = "overwrite")]
-    is_overwrite: bool,
-    /// Also copy the donor's compile_commands.json with paths rewritten.
-    #[arg(long = "relocate-cdb")]
-    is_relocate_cdb: bool,
+    /// Keep target shards and compilation database that already exist instead of replacing them.
+    #[arg(long = "keep-existing")]
+    is_keep_existing: bool,
+    /// Do not copy the donor's compile_commands.json with paths rewritten.
+    #[arg(long = "no-relocate-cdb")]
+    is_no_relocate_cdb: bool,
     /// Print the summary as JSON.
     #[arg(long = "json")]
     is_json: bool,
@@ -101,9 +101,12 @@ struct InstallHookArgs {
     /// Any directory of the repository.
     #[arg(long = "repo", value_name = "PATH", default_value = ".")]
     repo: PathBuf,
-    /// Make the hook pass --relocate-cdb.
-    #[arg(long = "relocate-cdb")]
-    is_relocate_cdb: bool,
+    /// Make the hook pass --no-relocate-cdb.
+    #[arg(long = "no-relocate-cdb")]
+    is_no_relocate_cdb: bool,
+    /// Make the hook pass --keep-existing.
+    #[arg(long = "keep-existing")]
+    is_keep_existing: bool,
     /// Replace a post-checkout hook that this tool did not install.
     #[arg(long = "force")]
     is_force: bool,
@@ -158,8 +161,8 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
         extra_mappings: args.mappings,
         compression: args.compression.into(),
         is_dry_run: args.is_dry_run,
-        is_overwrite: args.is_overwrite,
-        is_relocate_cdb: args.is_relocate_cdb,
+        is_overwrite: !args.is_keep_existing,
+        is_relocate_cdb: !args.is_no_relocate_cdb,
         user_index_dir: user_index_dir(env::var_os(CACHE_HOME_ENV), env::var_os(HOME_ENV)),
     })?;
     if !args.is_json {
@@ -206,8 +209,8 @@ fn run_diff(args: DiffArgs, out: &mut impl Write) -> Result<ExitCode> {
 
 fn run_install_hook(args: InstallHookArgs, out: &mut impl Write) -> Result<ExitCode> {
     let binary = std::env::current_exe().context("finding this executable's path")?;
-    let report =
-        install_hook(&HookInstallRequest { repo: args.repo, binary, is_relocate_cdb: args.is_relocate_cdb, is_force: args.is_force })?;
+    let relocate_flags = HookRelocateFlags { is_no_relocate_cdb: args.is_no_relocate_cdb, is_keep_existing: args.is_keep_existing };
+    let report = install_hook(&HookInstallRequest { repo: args.repo, binary, relocate_flags, is_force: args.is_force })?;
     write!(out, "{report}")?;
     Ok(ExitCode::SUCCESS)
 }

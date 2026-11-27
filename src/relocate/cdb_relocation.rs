@@ -21,7 +21,7 @@ const MAX_SYMLINK_DEPTH: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CdbOutcome {
-    /// `--relocate-cdb` was not given.
+    /// `--no-relocate-cdb` was given.
     NotRequested {
         is_target_cdb_present: bool,
     },

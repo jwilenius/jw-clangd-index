@@ -101,9 +101,9 @@ pub struct CdbSummary<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CdbAction {
-    /// `--relocate-cdb` was not given and the target has a database.
+    /// `--no-relocate-cdb` was given and the target has a database.
     TargetHasOne,
-    /// `--relocate-cdb` was not given and the target has none, so clangd ignores the index.
+    /// `--no-relocate-cdb` was given and the target has none, so clangd ignores the index.
     TargetHasNone,
     DonorHasNone,
     KeptExisting,
@@ -301,7 +301,7 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
     if !is_target_cdb_present {
         log::warn!(
             "{} has no compile_commands.json or build/compile_commands.json, so clangd will not use the relocated index \
-             until one exists; pass --relocate-cdb to copy the donor's",
+             until one exists; drop --no-relocate-cdb to copy the donor's",
             target_root.display()
         );
     }
