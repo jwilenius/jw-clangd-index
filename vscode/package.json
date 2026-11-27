@@ -65,7 +65,7 @@
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "markdownDescription": "Also copy the donor's `compile_commands.json` with paths rewritten (`--relocate-cdb`); clangd ignores the index unless the worktree has a compilation database."
+          "markdownDescription": "Also copy the donor's `compile_commands.json` with paths rewritten; off passes `--no-relocate-cdb`. clangd ignores the index unless the worktree has a compilation database."
         }
       }
     }

@@ -13,11 +13,11 @@ Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; the 
 - It counts the `*.idx` shards in `<folder>/.cache/clangd/index` and in each other worktree's index.
   When no other worktree has shards, it only logs, so repositories that clangd never indexed stay quiet.
   When the folder already holds at least half as many shards as the largest other index, it logs that the folder is indexed and stops.
-  Otherwise it runs `jw-clangd-index relocate --json --to <folder>`, plus `--relocate-cdb` when `jwClangdIndex.relocateCdb` is on.
+  Otherwise it runs `jw-clangd-index relocate --json --keep-existing --to <folder>`, plus `--no-relocate-cdb` when `jwClangdIndex.relocateCdb` is off.
 - The threshold is half, not "any shard", because clangd may start indexing the new worktree before the check runs: its first shards must not cancel the relocation that saves reindexing everything.
   The race remains for a clangd that writes more than half the shards first; then run `Relocate index` by hand.
   The CLI picks the donor: the indexed worktree whose `HEAD` differs from the folder's in the fewest files.
-- It never passes `--overwrite`, so shards that clangd has already written in the folder are kept.
+- It always passes `--keep-existing`, so shards and a compilation database that are already in the folder, such as shards clangd has written, are kept.
 - When more than 0 shards were relocated and the clangd extension (`llvm-vs-code-extensions.vscode-clangd`) is active, it runs `clangd.restart`, because a running clangd loads shards only at startup.
   In a multi-root workspace this restarts clangd once per folder that received shards.
   A clangd that is not running yet loads them when it starts.
@@ -31,9 +31,9 @@ Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; the 
 
 | Command                                 | Action                                                                                                                 |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `jw-clangd-index: Relocate index`       | Relocates into the chosen workspace folder now, from the automatically chosen donor, without `--overwrite`.            |
+| `jw-clangd-index: Relocate index`       | Relocates into the chosen workspace folder now, from the automatically chosen donor, with `--keep-existing`.           |
 | `jw-clangd-index: Relocate index from…` | Picks the donor from the folder's other worktrees (`git worktree list --porcelain -z`, without bare or prunable ones). |
-| `jw-clangd-index: Install git hook`     | Runs `install-hook --repo <folder>`, plus `--relocate-cdb` when `jwClangdIndex.relocateCdb` is on.                     |
+| `jw-clangd-index: Install git hook`     | Runs `install-hook --repo <folder>`, plus `--no-relocate-cdb` when `jwClangdIndex.relocateCdb` is off.                 |
 
 The hook stores the absolute path of the binary that installed it.
 VS Code deletes the bundled binary's versioned extension directory on update, so after installing with the bundled binary the command warns; set `jwClangdIndex.path` to a lasting binary and install again.
@@ -47,7 +47,7 @@ The commands report success in a notification.
 | ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
 | `jwClangdIndex.path`         | `""`    | Path of the binary; empty uses the bundled `bin/<platform>-<arch>/jw-clangd-index`, else `jw-clangd-index` on `PATH`. |
 | `jwClangdIndex.autoRelocate` | `true`  | Relocate automatically when a linked worktree opens without an index.                                                 |
-| `jwClangdIndex.relocateCdb`  | `true`  | Pass `--relocate-cdb`; clangd ignores the index unless the worktree has a compilation database.                       |
+| `jwClangdIndex.relocateCdb`  | `true`  | Relocate the compilation database; off passes `--no-relocate-cdb`. clangd ignores the index without one.              |
 
 ## Development
 

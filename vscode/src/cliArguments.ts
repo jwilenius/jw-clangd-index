@@ -10,14 +10,15 @@ export interface InstallHookRequest {
   readonly isRelocateCdb: boolean;
 }
 
-/** `relocate --json`, never `--overwrite`, so shards clangd already wrote in the target are kept. */
+/** `relocate --json --keep-existing`, so shards clangd already wrote in the target are kept. */
 export function buildRelocateArguments(request: RelocateRequest): string[] {
   const donorArgs = request.donorRoot === undefined ? [] : ["--from", request.donorRoot];
-  const cdbArgs = request.isRelocateCdb ? ["--relocate-cdb"] : [];
-  return ["relocate", "--json", "--to", request.targetRoot, ...donorArgs, ...cdbArgs];
+  const cdbArgs = request.isRelocateCdb ? [] : ["--no-relocate-cdb"];
+  return ["relocate", "--json", "--keep-existing", "--to", request.targetRoot, ...donorArgs, ...cdbArgs];
 }
 
+/** Without `--keep-existing`: the hook runs only in a newly added worktree, which has nothing to keep. */
 export function buildInstallHookArguments(request: InstallHookRequest): string[] {
-  const cdbArgs = request.isRelocateCdb ? ["--relocate-cdb"] : [];
+  const cdbArgs = request.isRelocateCdb ? [] : ["--no-relocate-cdb"];
   return ["install-hook", "--repo", request.repoRoot, ...cdbArgs];
 }

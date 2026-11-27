@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { describeRelocation, parseRelocationSummary, type RelocationSummary, SummaryFormatError } from "../src/relocationSummary";
 
-/** Output of `jw-clangd-index relocate --json --relocate-cdb` with an automatically chosen donor. */
+/** Output of `jw-clangd-index relocate --json` with an automatically chosen donor. */
 const SUMMARY_JSON = `{
   "is_dry_run": false,
   "donor_root": "/work/main",
