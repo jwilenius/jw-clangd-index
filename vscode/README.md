@@ -72,7 +72,7 @@ npm run package
 `package` (`scripts/package.mjs`) stops unless it runs on Linux x64, the only target the CLI is built for.
 It runs `cargo build --release` in the parent directory, copies `../target/release/jw-clangd-index` into `bin/linux-x64/` and runs `vsce package --target linux-x64 --no-dependencies` (esbuild bundles all code, so no `node_modules` are shipped), which type-checks and builds first and writes `jw-clangd-index-linux-x64-0.1.0.vsix`.
 `LICENSE` is a symlink to the repository root's `LICENSE`, so the `.vsix` carries it.
-`THIRD-PARTY-NOTICES.txt` holds the licenses of the Rust crates in the bundled binary; `npm run notices` regenerates it with `cargo-about`.
+`THIRD-PARTY-NOTICES.txt` holds the licenses of the Rust crates in the bundled binary; `npm run notices` regenerates it with `cargo-about`, and CI fails when it is out of date.
 Install it with `code --install-extension jw-clangd-index-linux-x64-0.1.0.vsix`.
 On macOS, build the CLI there and set `jwClangdIndex.path` or put the binary on `PATH`.
 

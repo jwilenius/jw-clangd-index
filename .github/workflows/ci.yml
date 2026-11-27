@@ -33,6 +33,14 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: vscode/package-lock.json
+      - uses: taiki-e/install-action@v2.90.3
+        with:
+          tool: cargo-about@0.9.3
+      - name: Check third-party notices are current
+        working-directory: vscode
+        run: |
+          npm run notices
+          git diff --exit-code -- THIRD-PARTY-NOTICES.txt
       - name: Check and package the extension
         working-directory: vscode
         run: |
