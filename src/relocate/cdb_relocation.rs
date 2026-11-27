@@ -43,6 +43,8 @@ pub enum CdbOutcome {
 pub enum LinkSkipReason {
     /// It leads to the donor's own database, which the write would replace.
     PointsAtDonorCdb,
+    /// It leads into the donor worktree, which is nested in the target, such as under `.claude/worktrees`.
+    PointsIntoDonor,
     /// It leads outside the target root, or to where that cannot be told, such as through a dangling
     /// directory symlink.
     LeavesTarget,
@@ -70,7 +72,7 @@ fn is_readable_file(path: &Path) -> bool {
 ///
 /// When that path is a symlink, often a tracked one into the build directory, the database is written
 /// where the symlink points, so the symlink stays and a dangling one starts to resolve. A path that
-/// leads to the donor's database or outside the target is not written at all.
+/// leads to the donor's database, into the donor or outside the target is not written at all.
 pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     let Some(donor_relative_path) = find_cdb(request.donor_root) else {
         return Ok(CdbOutcome::DonorCdbMissing);
@@ -84,7 +86,7 @@ pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     let donor_cdb = request.donor_root.join(donor_relative_path);
     let target_link = request.target_root.join(donor_relative_path);
     let target_cdb = resolve_symlinks(&target_link)?;
-    if let Some(reason) = find_link_skip_reason(&target_cdb, &donor_cdb, request.target_root)? {
+    if let Some(reason) = find_link_skip_reason(&target_cdb, &donor_cdb, request)? {
         return Ok(CdbOutcome::SkippedLink { link: target_link, reason });
     }
 
@@ -148,8 +150,9 @@ fn resolve_symlinks(path: &Path) -> Result<PathBuf> {
     bail!("{}: more than {MAX_SYMLINK_DEPTH} levels of symlinks", path.display())
 }
 
-/// `None` when `target_cdb`, the resolved write path, is inside the target and is not the donor's database.
-fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, target_root: &Path) -> Result<Option<LinkSkipReason>> {
+/// `None` when `target_cdb`, the resolved write path, is inside the target and not inside the donor; a
+/// donor nested in the target is the closer root of its files, a target nested in the donor of its own.
+fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, request: &CdbRelocationRequest) -> Result<Option<LinkSkipReason>> {
     let Some(real_target_cdb) = resolve_real_path(target_cdb) else {
         return Ok(Some(LinkSkipReason::LeavesTarget));
     };
@@ -157,11 +160,20 @@ fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, target_root: &Path
     if real_target_cdb == real_donor_cdb {
         return Ok(Some(LinkSkipReason::PointsAtDonorCdb));
     }
-    let real_target_root = fs::canonicalize(target_root).with_context(|| format!("resolving {}", target_root.display()))?;
+    let real_target_root = canonicalize_root(request.target_root)?;
     if !real_target_cdb.starts_with(&real_target_root) {
         return Ok(Some(LinkSkipReason::LeavesTarget));
     }
+    let real_donor_root = canonicalize_root(request.donor_root)?;
+    let is_donor_nested_in_target = real_donor_root.starts_with(&real_target_root);
+    if is_donor_nested_in_target && real_target_cdb.starts_with(&real_donor_root) {
+        return Ok(Some(LinkSkipReason::PointsIntoDonor));
+    }
     Ok(None)
+}
+
+fn canonicalize_root(root: &Path) -> Result<PathBuf> {
+    fs::canonicalize(root).with_context(|| format!("resolving {}", root.display()))
 }
 
 /// `path` with every symlink resolved, though its last components need not exist: the deepest existing
@@ -385,5 +397,54 @@ mod tests {
 
         assert_eq!(outcome, CdbOutcome::SkippedLink { link: target_link, reason: LinkSkipReason::LeavesTarget });
         assert_eq!(fs::read_dir(&outside_dir).unwrap().count(), 0);
+    }
+
+    /// Relocates from a donor at `donor_relative_root` under the target, whose database is its root
+    /// `compile_commands.json`, into the target, whose root `compile_commands.json` links to `link_target`.
+    fn relocate_from_nested_donor(target_root: &Path, donor_relative_root: &str, link_target: &str) -> (PathBuf, CdbOutcome) {
+        let donor_root = target_root.join(donor_relative_root);
+        write_donor_cdb(&donor_root);
+        fs::rename(donor_root.join("build/compile_commands.json"), donor_root.join("compile_commands.json")).unwrap();
+        let target_link = target_root.join("compile_commands.json");
+        std::os::unix::fs::symlink(link_target, &target_link).unwrap();
+        let path_map = path_map();
+        let request =
+            CdbRelocationRequest { donor_root: &donor_root, target_root, path_map: &path_map, is_overwrite: true, is_dry_run: false };
+
+        (target_link, relocate_cdb(&request).unwrap())
+    }
+
+    #[test]
+    fn skips_link_into_donor_nested_in_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_root = temp.path().join("target");
+
+        let (target_link, outcome) =
+            relocate_from_nested_donor(&target_root, ".claude/worktrees/x", ".claude/worktrees/x/build/compile_commands.json");
+
+        assert_eq!(outcome, CdbOutcome::SkippedLink { link: target_link, reason: LinkSkipReason::PointsIntoDonor });
+        assert!(!target_root.join(".claude/worktrees/x/build/compile_commands.json").exists());
+    }
+
+    #[test]
+    fn writes_target_cdb_outside_nested_donor() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_root = temp.path().join("target");
+
+        let (_, outcome) = relocate_from_nested_donor(&target_root, ".claude/worktrees/x", "build/compile_commands.json");
+
+        assert_eq!(outcome, CdbOutcome::Written(target_root.join("build/compile_commands.json")));
+    }
+
+    #[test]
+    fn writes_into_target_nested_in_donor() {
+        let temp = tempfile::tempdir().unwrap();
+        let donor_root = temp.path().join("donor");
+        let target_root = donor_root.join(".claude/worktrees/y");
+        write_donor_cdb(&donor_root);
+
+        let (_, outcome) = relocate_through_link(&donor_root, &target_root, Path::new("cdb.json"));
+
+        assert_eq!(outcome, CdbOutcome::Written(target_root.join("build/cdb.json")));
     }
 }

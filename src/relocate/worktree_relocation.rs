@@ -507,6 +507,7 @@ fn describe_cdb(cdb: &CdbOutcome, is_dry_run: bool) -> String {
 fn describe_skip_reason(reason: LinkSkipReason) -> &'static str {
     match reason {
         LinkSkipReason::PointsAtDonorCdb => "links to the donor's database",
+        LinkSkipReason::PointsIntoDonor => "links into the donor worktree",
         LinkSkipReason::LeavesTarget => "links outside the target",
     }
 }
