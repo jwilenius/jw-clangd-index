@@ -51,10 +51,7 @@ pub struct ShardFile<'a> {
 
 impl<'a> ShardFile<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let riff = parse_riff(bytes)?;
-        if &riff.file_type != INDEX_FILE_TYPE {
-            bail!("not a clangd index file (type {})", String::from_utf8_lossy(&riff.file_type));
-        }
+        let riff = parse_index_riff(bytes)?;
         let version = read_version(&riff)?;
         let strings = decode_string_table(riff.chunk(STRINGS_CHUNK).context("missing stri chunk")?)?;
         Ok(Self { riff, version, strings })
@@ -93,6 +90,20 @@ impl<'a> ShardFile<'a> {
         self.riff.replace_chunk(STRINGS_CHUNK, strings);
         Ok(write_riff(&self.riff))
     }
+}
+
+/// Reads only the format version, so a shard of an unsupported version is skipped before its string table
+/// is decoded.
+pub fn read_shard_version(bytes: &[u8]) -> Result<u32> {
+    read_version(&parse_index_riff(bytes)?)
+}
+
+fn parse_index_riff(bytes: &[u8]) -> Result<RiffFile<'_>> {
+    let riff = parse_riff(bytes)?;
+    if &riff.file_type != INDEX_FILE_TYPE {
+        bail!("not a clangd index file (type {})", String::from_utf8_lossy(&riff.file_type));
+    }
+    Ok(riff)
 }
 
 fn read_version(riff: &RiffFile) -> Result<u32> {

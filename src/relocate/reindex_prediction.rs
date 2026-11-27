@@ -30,7 +30,7 @@ use super::path_map::PathMap;
 use super::shard_relocation::{find_shard_self_node, shard_file_name};
 use super::string_map_order::{StringMapProbing, string_map_order};
 use crate::format::digest::{FileDigest, digest};
-use crate::format::shard::{SOURCE_FLAG_IS_TU, SUPPORTED_VERSIONS, ShardFile};
+use crate::format::shard::{SOURCE_FLAG_IS_TU, SUPPORTED_VERSIONS, ShardFile, read_shard_version};
 use crate::format::uri::file_uri_to_path;
 
 /// One shard's own source file in the cross-shard include graph.
@@ -236,11 +236,11 @@ fn read_graph_entry(shard_path: &Path, path_map: &PathMap) -> Option<(PathBuf, S
 
 fn read_source_node(shard_path: &Path, path_map: &PathMap) -> Result<Option<(PathBuf, SourceNode)>> {
     let bytes = fs::read(shard_path).context("reading shard")?;
-    let shard = ShardFile::parse(&bytes)?;
-    let is_supported_version = SUPPORTED_VERSIONS.contains(&shard.version);
+    let is_supported_version = SUPPORTED_VERSIONS.contains(&read_shard_version(&bytes)?);
     if !is_supported_version {
         return Ok(None);
     }
+    let shard = ShardFile::parse(&bytes)?;
     let file_name = shard_path.file_name().context("shard path has no file name")?;
     let Some(self_node) = find_shard_self_node(file_name, &shard)? else {
         return Ok(None);

@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 
 use super::path_map::PathMap;
 use crate::format::digest::{DIGEST_SIZE, digest, digest_hex};
-use crate::format::shard::{IncludeGraphNode, SUPPORTED_VERSIONS, ShardFile};
+use crate::format::shard::{IncludeGraphNode, SUPPORTED_VERSIONS, ShardFile, read_shard_version};
 use crate::format::string_table::{StringTable, TableCompression};
 use crate::format::uri::file_uri_to_path;
 
@@ -68,11 +68,12 @@ impl std::error::Error for UnsupportedVersionError {}
 /// version fails with [`UnsupportedVersionError`], a missing self node with [`HashSelfCheckError`].
 pub fn relocate_shard(file_name: &OsStr, bytes: &[u8], path_map: &PathMap, compression: TableCompression) -> Result<RelocatedShard> {
     let shard_name = ShardName::parse(file_name.as_bytes())?;
-    let mut shard = ShardFile::parse(bytes)?;
-    let is_supported_version = SUPPORTED_VERSIONS.contains(&shard.version);
+    let version = read_shard_version(bytes)?;
+    let is_supported_version = SUPPORTED_VERSIONS.contains(&version);
     if !is_supported_version {
-        return Err(UnsupportedVersionError { file_name: file_name.to_owned(), version: shard.version }.into());
+        return Err(UnsupportedVersionError { file_name: file_name.to_owned(), version }.into());
     }
+    let mut shard = ShardFile::parse(bytes)?;
     let self_node = find_self_node(&shard, &shard_name)?.ok_or_else(|| HashSelfCheckError { file_name: file_name.to_owned() })?;
 
     let rewritten_strings = rewrite_strings(&mut shard.strings, path_map);

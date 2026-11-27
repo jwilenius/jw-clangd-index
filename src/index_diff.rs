@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 
-use crate::format::shard::{SUPPORTED_VERSIONS, ShardFile};
+use crate::format::shard::{SUPPORTED_VERSIONS, ShardFile, read_shard_version};
 use crate::format::shard_contents::{ShardContents, decode_shard_contents};
 use crate::format::string_table::TableCompression;
 use crate::relocate::index_relocation::list_shards;
@@ -156,11 +156,12 @@ fn decode_index(dir: &Path) -> Result<DecodedIndex> {
 fn decode_shard(shard_path: &Path) -> Result<ShardDecoding> {
     let file_name = shard_path.file_name().context("shard path has no file name")?;
     let bytes = fs::read(shard_path).context("reading shard")?;
-    let shard = ShardFile::parse(&bytes)?;
-    let is_supported_version = SUPPORTED_VERSIONS.contains(&shard.version);
+    let version = read_shard_version(&bytes)?;
+    let is_supported_version = SUPPORTED_VERSIONS.contains(&version);
     if !is_supported_version {
-        return Ok(ShardDecoding::Skipped(SkippedShard { path: shard_path.to_path_buf(), version: shard.version }));
+        return Ok(ShardDecoding::Skipped(SkippedShard { path: shard_path.to_path_buf(), version }));
     }
+    let shard = ShardFile::parse(&bytes)?;
     let contents = decode_shard_contents(&shard)?;
     Ok(ShardDecoding::Decoded { file_name: file_name.to_owned(), contents })
 }
