@@ -135,11 +135,29 @@ describe("describeRelocation", () => {
     assert.match(describeRelocation(summary), /; no compile_commands.json, so clangd ignores the index$/);
   });
 
-  it("warns when the compilation database links outside the worktree", () => {
+  it("warns that nothing was written when the compilation database links outside the worktree", () => {
     const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "leaves_target" } as const;
     const summary: RelocationSummary = { ...SUMMARY, cdb };
 
-    assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so it was not replaced$/);
+    assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so nothing was written$/);
+  });
+
+  it("warns that clangd ignores the index behind a skipped link without a usable database", () => {
+    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "points_at_donor_cdb" } as const;
+    const reindex = { hasCdbMainFiles: false, reindexedTus: [], staleFiles: 0, mainFilesWithoutShard: [] };
+    const summary: RelocationSummary = { ...SUMMARY, cdb, reindex };
+
+    assert.match(
+      describeRelocation(summary),
+      /; compile_commands.json links to the donor's database, so nothing was written, and clangd ignores the index until the worktree has a usable one$/,
+    );
+  });
+
+  it("names a link into the donor worktree", () => {
+    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "points_into_donor" } as const;
+    const summary: RelocationSummary = { ...SUMMARY, cdb };
+
+    assert.match(describeRelocation(summary), /; compile_commands.json links into the donor worktree, so nothing was written$/);
   });
 
   it("says what a run that relocated the shards could not do", () => {

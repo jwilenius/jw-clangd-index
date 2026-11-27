@@ -166,11 +166,12 @@ export function describeRelocation(summary: RelocationSummary): string {
   const verb = summary.isDryRun ? "would relocate" : "relocated";
   const keptAndFailed = `${shards.keptExisting} kept, ${shards.failed} failed`;
   const reindex = summary.reindex === undefined ? "reindex not predicted" : `${summary.reindex.reindexedTus.length} TUs to reindex`;
-  const cdbWarning = describeCdbWarning(summary.cdb.action);
+  const cdbWarning = describeCdbWarning(summary);
   return `${verb} ${shards.relocated} shards from ${path.basename(summary.donorRoot)} (${keptAndFailed}); ${reindex}${cdbWarning}`;
 }
 
-function describeCdbWarning(action: CdbAction): string {
+function describeCdbWarning(summary: RelocationSummary): string {
+  const { action } = summary.cdb;
   if (CDB_MISSING_ACTIONS.includes(action)) {
     return "; no compile_commands.json, so clangd ignores the index";
   }
@@ -181,9 +182,23 @@ function describeCdbWarning(action: CdbAction): string {
     return "; git tracks compile_commands.json, so it was not replaced";
   }
   if (action === "skipped_link") {
-    return "; compile_commands.json links outside the worktree, so it was not replaced";
+    return describeSkippedLink(summary);
   }
   return "";
+}
+
+/** Where a skipped `compile_commands.json` link points, by its `reason`. */
+const LINK_TARGETS: Readonly<Record<string, string>> = {
+  points_at_donor_cdb: "to the donor's database",
+  points_into_donor: "into the donor worktree",
+  leaves_target: "outside the worktree",
+};
+
+function describeSkippedLink(summary: RelocationSummary): string {
+  const linkTarget = LINK_TARGETS[summary.cdb.reason ?? ""] ?? "outside the worktree";
+  const consequence =
+    summary.reindex?.hasCdbMainFiles === false ? ", and clangd ignores the index until the worktree has a usable one" : "";
+  return `; compile_commands.json links ${linkTarget}, so nothing was written${consequence}`;
 }
 
 /** What went wrong in a run that relocated the shards, for a warning; `undefined` when nothing did. */
