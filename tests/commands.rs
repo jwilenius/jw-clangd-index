@@ -226,6 +226,24 @@ fn relocate_never_writes_through_link_to_donor_cdb() {
 }
 
 #[test]
+fn relocate_warns_that_clangd_ignores_index_behind_skipped_dangling_link() {
+    let repos = indexed_repo_with_worktree();
+    let target_link = repos.worktree.join(CDB_RELATIVE_PATH);
+    fs::create_dir_all(target_link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("../../outside/compile_commands.json", &target_link).unwrap();
+
+    let run = run_tool(&repos.worktree, &["relocate", "--json"]);
+
+    assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
+    let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
+    assert_eq!(summary["cdb"]["reason"], "leaves_target");
+    assert_contains(
+        &run.stderr,
+        "links outside the target, so the relocated compile_commands.json is not written through it; clangd will not use the index until the target has one",
+    );
+}
+
+#[test]
 fn relocate_json_has_nulls_for_a_given_donor_without_cdb_relocation() {
     let repos = indexed_repo_with_worktree();
 

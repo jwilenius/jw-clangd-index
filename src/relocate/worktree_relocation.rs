@@ -299,7 +299,7 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
             is_overwrite: request.is_overwrite,
             is_dry_run: request.is_dry_run,
         })?;
-        warn_about_cdb(&outcome);
+        warn_about_cdb(&outcome, target_root);
         return Ok(outcome);
     }
     let is_target_cdb_present = find_cdb(target_root).is_some();
@@ -313,14 +313,15 @@ fn place_cdb(request: &WorktreeRelocationRequest, donor_root: &Path, target_root
     Ok(CdbOutcome::NotRequested { is_target_cdb_present })
 }
 
-fn warn_about_cdb(outcome: &CdbOutcome) {
+fn warn_about_cdb(outcome: &CdbOutcome, target_root: &Path) {
     match outcome {
         CdbOutcome::DonorCdbMissing => {
             log::warn!("the donor has no compile_commands.json to relocate; clangd will not use the index until the target has one")
         }
         CdbOutcome::SkippedLink { link, reason } => {
+            let consequence = if find_cdb(target_root).is_none() { "; clangd will not use the index until the target has one" } else { "" };
             log::warn!(
-                "{} {}, so the relocated compile_commands.json is not written through it",
+                "{} {}, so the relocated compile_commands.json is not written through it{consequence}",
                 link.display(),
                 describe_skip_reason(*reason)
             )
