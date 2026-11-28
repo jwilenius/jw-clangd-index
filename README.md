@@ -180,11 +180,15 @@ A readable database entry without a shard is reported separately, as clangd inde
 
 ## Limitations
 
-- Generated headers are compared like any other file, so a missing generated header counts as not stale until the build creates it, and clangd only notices it changed when it reindexes later.
+- Generated headers are compared like any other file.
+  A missing generated header therefore counts as not stale until the build creates it, and clangd notices the change only when it reindexes later.
 - Only clangd index format versions 19, 20 and 21 (clangd 18 to 23 and llvm main as of 2026-11) are relocated; shards of other versions are skipped.
-- Only the target root's index is relocated, not the donor's `build/.cache/clangd/index`, so files under an in-tree `build/`, such as generated headers, have no shard in the target and their main files are reindexed.
-- Without a usable compilation database clangd reindexes nothing; the prediction then walks the index's translation units and is labelled as holding once a database exists.
-- The predicted owner of a file shared by several translation units assumes the `StringMap` probing of the tables above; format 20 shards whose compile commands name no clangd resource directory, a compile command that sets its own resource directory, or a clangd built against a different implementation can lead clangd to pick another owner.
+- Only the target root's index is relocated, not the donor's `build/.cache/clangd/index`.
+  Files under an in-tree `build/`, such as generated headers, therefore have no shard in the target, and their main files are reindexed.
+- Without a usable compilation database, clangd reindexes nothing.
+  The prediction then walks the index's TUs, and the summary says that it applies once a database exists.
+- The predicted owner of a file shared by several TUs assumes the `StringMap` probing of the tables above.
+  clangd can pick another owner when format 20 shards have compile commands that name no clangd resource directory, when a compile command sets its own resource directory, or when clangd was built against a different `StringMap` implementation.
 - A file outside the target root is looked up in the user index even when clangd would store it with another project, such as an out-of-tree build directory with its own compilation database.
 - Relocated compilation databases are pretty-printed with object keys sorted.
 
@@ -198,7 +202,7 @@ Scripts in the shared script library (`~/projects/ai-config/tmp/script-library/`
 - `clangd-index-relocate-timing.py` times `relocate` into fresh worktrees of an indexed repo.
 - `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone (`--llvm-repo`) or raw files of a commit (`--raw-base`) and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
 
-Run clangd with `XDG_CACHE_HOME` in a scratch directory, so the user index in `~/.cache` stays untouched.
+Run clangd with `XDG_CACHE_HOME` set to a scratch directory, so the user index in `~/.cache` stays untouched.
 On macOS clangd ignores `XDG_CACHE_HOME`, so the E2E run there writes to the real user index.
 
 ## License
