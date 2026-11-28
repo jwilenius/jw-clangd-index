@@ -16,8 +16,9 @@
 //! [`load_cdb_main_files`] reproduces; without a database the TUs of the index are walked in path order.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::ops::RangeInclusive;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
@@ -41,8 +42,11 @@ pub struct SourceNode {
     pub digest: FileDigest,
     /// The other sources the shard lists: the files this one includes directly.
     pub includes: Vec<PathBuf>,
-    /// Index format version of the shard, which tells which clangd wrote it.
+    /// Index format version of the shard, which narrows down which clangd wrote it.
     pub format_version: u32,
+    /// Major version of the clangd that wrote the shard, from the resource directory in its compile
+    /// command; `None` for a shard without one, such as a header's.
+    pub clangd_major: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -60,6 +64,20 @@ pub struct ReindexPrediction {
     /// Readable main files without a shard, sorted by path; clangd indexes them from scratch.
     pub main_files_without_shard: Vec<PathBuf>,
 }
+
+/// The newest index format version that only clangd versions with quadratic probing write: 19 is written
+/// by clangd 18 and 19.
+const LAST_QUADRATIC_PROBING_FORMAT_VERSION: u32 = 19;
+/// The index format version that clangd 20 to 23 write, so it does not tell their probings apart.
+const AMBIGUOUS_PROBING_FORMAT_VERSION: u32 = 20;
+/// The clangd majors that write [`AMBIGUOUS_PROBING_FORMAT_VERSION`] and probe quadratically; llvm-project
+/// a296bdef76 ("Replace tombstone deletion with TAOCP 6.4 Algorithm R") switched
+/// `llvm/lib/Support/StringMap.cpp` to linear probing for LLVM 23.
+const QUADRATIC_PROBING_FORMAT_20_CLANGD_MAJORS: RangeInclusive<u32> = 20..=22;
+/// The newest clangd major that writes [`AMBIGUOUS_PROBING_FORMAT_VERSION`].
+const LAST_FORMAT_20_CLANGD_MAJOR: u32 = 23;
+/// The compile command flag that clangd's `CommandMangler` adds (`clangd/CompileCommands.cpp`).
+const RESOURCE_DIR_FLAG_PREFIX: &[u8] = b"-resource-dir=";
 
 /// The fields of a compilation database entry that locate its main file.
 #[derive(Deserialize)]
@@ -149,11 +167,40 @@ pub fn load_cdb_main_files(cdb_path: &Path, path_map: Option<&PathMap>, probing:
     Ok(string_map_order(main_files, probing))
 }
 
-/// The `StringMap` probing of the clangd that wrote the newest TU shards of `graph`; LLVM 23's when it
-/// has none. Header shards are left out: those from the user index may come from another clangd.
+/// The `StringMap` probing of the clangd that wrote the newest TU shards of `graph`: by their format
+/// version, and for format 20 by the newest clangd major that their compile commands name; LLVM 23's when
+/// it has no TU shards. Header shards are left out: those from the user index may come from another clangd.
 pub fn graph_string_map_probing(graph: &IncludeGraph) -> StringMapProbing {
-    let newest_version = graph.nodes.values().filter(|node| node.is_tu).map(|node| node.format_version).max();
-    newest_version.map_or(StringMapProbing::Linear, StringMapProbing::of_format_version)
+    let tus: Vec<&SourceNode> = graph.nodes.values().filter(|node| node.is_tu).collect();
+    let Some(newest_format_version) = tus.iter().map(|node| node.format_version).max() else {
+        return StringMapProbing::Linear;
+    };
+    let newest_tus = tus.iter().filter(|node| node.format_version == newest_format_version);
+    let newest_clangd_major = newest_tus.filter_map(|node| node.clangd_major).max();
+    string_map_probing(newest_format_version, newest_clangd_major)
+}
+
+/// The probing of the clangd that writes index format `format_version` and, for format 20, has major
+/// version `clangd_major`. A major that format 20 rules out, which only a compile command's own resource
+/// directory can name, counts as unknown; with an unknown major format 20 counts as clangd 23's.
+fn string_map_probing(format_version: u32, clangd_major: Option<u32>) -> StringMapProbing {
+    if format_version <= LAST_QUADRATIC_PROBING_FORMAT_VERSION {
+        return StringMapProbing::Quadratic;
+    }
+    if format_version > AMBIGUOUS_PROBING_FORMAT_VERSION {
+        return StringMapProbing::Linear;
+    }
+    match clangd_major {
+        Some(major) if QUADRATIC_PROBING_FORMAT_20_CLANGD_MAJORS.contains(&major) => StringMapProbing::Quadratic,
+        Some(LAST_FORMAT_20_CLANGD_MAJOR) => StringMapProbing::Linear,
+        _ => {
+            log::warn!(
+                "the format {AMBIGUOUS_PROBING_FORMAT_VERSION} TU shards name no resource directory of clangd 20 to 23; \
+                 predicting with clangd 23's StringMap probing, which can attribute shared headers to other TUs than clangd 20 to 22 do"
+            );
+            StringMapProbing::Linear
+        }
+    }
 }
 
 /// `main_files` without those under `nested_dirs`: clangd loads only the main files that the database's
@@ -254,7 +301,34 @@ fn read_source_node(shard_path: &Path, path_map: &PathMap) -> Result<Option<(Pat
         includes.extend(mapped_uri_path(&shard, node.uri, path_map)?);
     }
     let is_tu = self_node.flags & SOURCE_FLAG_IS_TU != 0;
-    Ok(Some((path, SourceNode { is_tu, digest: self_node.digest, includes, format_version: shard.version })))
+    // clangd's `readRIFF` rejects a shard whose compile command does not decode, so it counts as missing.
+    let clangd_major = read_clangd_major(&shard)?;
+    Ok(Some((path, SourceNode { is_tu, digest: self_node.digest, includes, format_version: shard.version, clangd_major })))
+}
+
+/// The clangd major of the shard's compile command, if it has one; see [`clangd_major_of_command`].
+fn read_clangd_major(shard: &ShardFile) -> Result<Option<u32>> {
+    let Some(command) = shard.command()? else {
+        return Ok(None);
+    };
+    let arguments = command.arguments.iter().map(|&index| shard.strings.get(index)).collect::<Result<Vec<&[u8]>>>()?;
+    Ok(clangd_major_of_command(&arguments))
+}
+
+/// The major version in the last `-resource-dir=<install>/lib/clang/<major>`, which clangd's
+/// `CommandMangler` adds to a compile command that sets no resource directory itself. clangd never adds
+/// the separate `-resource-dir <dir>` form, so a command with only that one names no clangd.
+fn clangd_major_of_command(arguments: &[&[u8]]) -> Option<u32> {
+    let resource_dir = arguments.iter().rev().find_map(|argument| argument.strip_prefix(RESOURCE_DIR_FLAG_PREFIX))?;
+    clangd_major_of_resource_dir(resource_dir)
+}
+
+/// The number before the first `.` of the last component of `resource_dir`, such as 21 of
+/// `/usr/lib/llvm-21/lib/clang/21` or of `/opt/llvm/lib/clang/21.1.0`.
+fn clangd_major_of_resource_dir(resource_dir: &[u8]) -> Option<u32> {
+    let version = Path::new(OsStr::from_bytes(resource_dir)).file_name()?;
+    let major = version.as_bytes().split(|&byte| byte == b'.').next()?;
+    std::str::from_utf8(major).ok()?.parse().ok()
 }
 
 /// The path of the `file:` URI at string index `uri` after mapping; `None` for other URI schemes.
@@ -294,7 +368,7 @@ mod tests {
     use super::*;
     use crate::format::bytes::write_var;
     use crate::format::riff::{Chunk, RiffFile, write_riff};
-    use crate::format::shard::{META_CHUNK, SOURCES_CHUNK, STRINGS_CHUNK};
+    use crate::format::shard::{COMMAND_CHUNK, META_CHUNK, SOURCES_CHUNK, STRINGS_CHUNK};
     use crate::format::string_table::{StringTable, TableCompression, encode_string_table};
     use crate::format::uri::path_to_file_uri;
     use crate::relocate::path_map::RootMapping;
@@ -318,8 +392,13 @@ mod tests {
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
                 fs::write(&path, relative_path).unwrap();
                 let includes = includes.iter().map(|include| temp.path().join(include)).collect();
-                let node =
-                    SourceNode { is_tu: *is_tu, digest: digest(relative_path.as_bytes()), includes, format_version: SUPPORTED_VERSIONS[0] };
+                let node = SourceNode {
+                    is_tu: *is_tu,
+                    digest: digest(relative_path.as_bytes()),
+                    includes,
+                    format_version: SUPPORTED_VERSIONS[0],
+                    clangd_major: None,
+                };
                 graph.nodes.insert(path, node);
             }
             SourceTree { temp, graph }
@@ -374,9 +453,9 @@ mod tests {
         let paths = std::iter::once(path).chain(includes.iter().map(PathBuf::as_path));
         let uris = paths.map(|source| path_to_file_uri(source.as_os_str().as_bytes())).collect();
         let include_uris: Vec<u32> = (1..=includes.len() as u32).collect();
-        let mut sources = encode_source_node(0, contents_digest, &include_uris);
+        let mut sources = encode_source_node(0, 0, contents_digest, &include_uris);
         for &uri in &include_uris {
-            sources.extend(encode_source_node(uri, FileDigest::default(), &[]));
+            sources.extend(encode_source_node(0, uri, FileDigest::default(), &[]));
         }
         let strings = encode_string_table(&StringTable { strings: uris }, TableCompression::None).unwrap();
         let chunks = vec![
@@ -387,9 +466,32 @@ mod tests {
         write_riff(&RiffFile { file_type: INDEX_FILE_TYPE, chunks })
     }
 
-    /// A `srcs` entry without flags.
-    fn encode_source_node(uri: u32, contents_digest: FileDigest, direct_includes: &[u32]) -> Vec<u8> {
-        let mut node = vec![0];
+    /// A TU shard of format `version` whose only node is `path`'s (string 0), with compile command
+    /// `arguments`.
+    fn encode_tu_shard(path: &Path, version: u32, arguments: &[&str]) -> Vec<u8> {
+        let uri = path_to_file_uri(path.as_os_str().as_bytes());
+        let directory = b"/work".to_vec();
+        let argument_strings = arguments.iter().map(|argument| argument.as_bytes().to_vec());
+        let strings: Vec<Vec<u8>> = [uri, directory].into_iter().chain(argument_strings).collect();
+        let mut command = Vec::new();
+        write_var(&mut command, 1);
+        write_var(&mut command, arguments.len() as u32);
+        for index in 2..strings.len() as u32 {
+            write_var(&mut command, index);
+        }
+        let strings = encode_string_table(&StringTable { strings }, TableCompression::None).unwrap();
+        let chunks = vec![
+            Chunk { id: *META_CHUNK, data: Cow::Owned(version.to_le_bytes().to_vec()) },
+            Chunk { id: *STRINGS_CHUNK, data: Cow::Owned(strings) },
+            Chunk { id: *SOURCES_CHUNK, data: Cow::Owned(encode_source_node(SOURCE_FLAG_IS_TU, 0, FileDigest::default(), &[])) },
+            Chunk { id: *COMMAND_CHUNK, data: Cow::Owned(command) },
+        ];
+        write_riff(&RiffFile { file_type: INDEX_FILE_TYPE, chunks })
+    }
+
+    /// A `srcs` entry with `flags`.
+    fn encode_source_node(flags: u8, uri: u32, contents_digest: FileDigest, direct_includes: &[u32]) -> Vec<u8> {
+        let mut node = vec![flags];
         write_var(&mut node, uri);
         node.extend(contents_digest);
         write_var(&mut node, direct_includes.len() as u32);
@@ -559,15 +661,21 @@ mod tests {
         assert_eq!(governed, [PathBuf::from("/p/src/a.cpp"), PathBuf::from("/p/build-x/b.cpp")]);
     }
 
-    #[test]
-    fn loads_cdb_main_files_in_order_of_real_llvm() {
-        let temp = tempfile::tempdir().unwrap();
-        let cdb_path = temp.path().join("compile_commands.json");
+    /// Writes a compilation database of [`golden::entries`] into `dir`.
+    fn write_golden_cdb(dir: &Path) -> PathBuf {
+        let cdb_path = dir.join("compile_commands.json");
         let entries: Vec<serde_json::Value> = golden::entries()
             .into_iter()
             .map(|(directory, file)| serde_json::json!({"directory": directory, "file": file, "command": "c++ -c x.cpp"}))
             .collect();
         fs::write(&cdb_path, serde_json::to_vec(&entries).unwrap()).unwrap();
+        cdb_path
+    }
+
+    #[test]
+    fn loads_cdb_main_files_in_order_of_real_llvm() {
+        let temp = tempfile::tempdir().unwrap();
+        let cdb_path = write_golden_cdb(temp.path());
 
         for probing in [StringMapProbing::Quadratic, StringMapProbing::Linear] {
             let main_files = load_cdb_main_files(&cdb_path, None, probing).unwrap();
@@ -585,6 +693,70 @@ mod tests {
         assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Quadratic);
         graph.nodes.values_mut().find(|node| node.is_tu).unwrap().format_version = 20;
         assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Linear);
+        graph.nodes.values_mut().for_each(|node| node.clangd_major = Some(if node.is_tu { 21 } else { 23 }));
+        assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Quadratic);
+        graph.nodes.values_mut().filter(|node| node.is_tu).for_each(|node| node.format_version = 20);
+        graph.nodes.values_mut().find(|node| node.is_tu).unwrap().clangd_major = Some(23);
+        assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Linear);
+        graph.nodes.values_mut().filter(|node| node.is_tu).for_each(|node| node.format_version = 21);
+        graph.nodes.values_mut().find(|node| node.is_tu && node.clangd_major == Some(21)).unwrap().format_version = 20;
+        assert_eq!(graph_string_map_probing(&graph), StringMapProbing::Linear);
+    }
+
+    #[test]
+    fn takes_string_map_probing_of_format_version_and_for_format_20_of_clangd_major() {
+        let cases = [
+            (19, None, StringMapProbing::Quadratic),
+            (19, Some(23), StringMapProbing::Quadratic),
+            (20, Some(20), StringMapProbing::Quadratic),
+            (20, Some(21), StringMapProbing::Quadratic),
+            (20, Some(22), StringMapProbing::Quadratic),
+            (20, Some(23), StringMapProbing::Linear),
+            (20, Some(17), StringMapProbing::Linear),
+            (20, None, StringMapProbing::Linear),
+            (21, None, StringMapProbing::Linear),
+            (21, Some(22), StringMapProbing::Linear),
+        ];
+
+        for (format_version, clangd_major, expected) in cases {
+            assert_eq!(string_map_probing(format_version, clangd_major), expected, "format {format_version}, clangd {clangd_major:?}");
+        }
+    }
+
+    #[test]
+    fn reads_clangd_major_from_last_joined_resource_dir() {
+        let cases: [(&[&str], Option<u32>); 7] = [
+            (&["c++", "-resource-dir=/opt/clangd_21.1.8/lib/clang/21", "--", "a.cpp"], Some(21)),
+            (&["c++", "-resource-dir=/usr/lib/llvm-21/lib/clang/21/"], Some(21)),
+            (&["c++", "-resource-dir=/opt/llvm/lib/clang/22.1.6"], Some(22)),
+            (&["c++", "-resource-dir=/a/lib/clang/19", "-resource-dir=/b/lib/clang/23"], Some(23)),
+            (&["c++", "-resource-dir", "/opt/clangd_21.1.8/lib/clang/21"], None),
+            (&["c++", "-resource-dir=/opt/clangd/lib/clang/"], None),
+            (&["c++", "-c", "a.cpp"], None),
+        ];
+
+        for (arguments, expected) in cases {
+            let arguments: Vec<&[u8]> = arguments.iter().map(|argument| argument.as_bytes()).collect();
+            assert_eq!(clangd_major_of_command(&arguments), expected, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn loads_cdb_main_files_in_quadratic_order_for_format_20_shards_of_clangd_21() {
+        let temp = tempfile::tempdir().unwrap();
+        let shard_dir = temp.path().join("index");
+        fs::create_dir(&shard_dir).unwrap();
+        let tu_path = golden::key(0);
+        let arguments = ["/usr/bin/c++", "-c", "-resource-dir=/opt/clangd_21.1.8/lib/clang/21", "--", "/work/proj/src/tu0.cpp"];
+        fs::write(shard_dir.join(shard_file_name(tu_path.as_os_str().as_bytes())), encode_tu_shard(&tu_path, 20, &arguments)).unwrap();
+
+        let graph = load_include_graph(&shard_dir, &PathMap::new(&[]).unwrap()).unwrap();
+        let probing = graph_string_map_probing(&graph);
+        let main_files = load_cdb_main_files(&write_golden_cdb(temp.path()), None, probing).unwrap();
+
+        assert_eq!(graph.nodes[&tu_path].clangd_major, Some(21));
+        assert_eq!(probing, StringMapProbing::Quadratic);
+        assert_eq!(main_files, golden::expected_order(StringMapProbing::Quadratic));
     }
 
     #[test]

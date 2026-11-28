@@ -17,9 +17,6 @@ const GROWTH_FACTOR: usize = 2;
 /// The table grows when `items * MAX_LOAD_DENOMINATOR > buckets * MAX_LOAD_NUMERATOR`.
 const MAX_LOAD_NUMERATOR: usize = 3;
 const MAX_LOAD_DENOMINATOR: usize = 4;
-/// The newest index format version that only clangd versions with quadratic probing write: 19 is written
-/// by clangd 18 and 19, 20 by clangd 20 to 23, of which only 23 probes linearly.
-const LAST_QUADRATIC_PROBING_FORMAT_VERSION: u32 = 19;
 
 /// How `StringMapImpl::LookupBucketFor` and `RehashTable` step from an occupied bucket to the next one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,12 +28,6 @@ pub enum StringMapProbing {
 }
 
 impl StringMapProbing {
-    /// The probing of the clangd that writes index format `version`; format 20 counts as LLVM 23's,
-    /// although clangd 20 to 22 write it too.
-    pub fn of_format_version(version: u32) -> StringMapProbing {
-        if version <= LAST_QUADRATIC_PROBING_FORMAT_VERSION { StringMapProbing::Quadratic } else { StringMapProbing::Linear }
-    }
-
     fn next_step(self, step: usize) -> usize {
         match self {
             StringMapProbing::Quadratic => step + 1,
@@ -250,13 +241,6 @@ mod tests {
 
         assert_eq!(string_map_order(keys.clone(), QUADRATIC), golden::expected_order(QUADRATIC));
         assert_eq!(string_map_order(keys, LINEAR), golden::expected_order(LINEAR));
-    }
-
-    #[test]
-    fn takes_probing_of_clangd_that_writes_format_version() {
-        assert_eq!(StringMapProbing::of_format_version(19), QUADRATIC);
-        assert_eq!(StringMapProbing::of_format_version(20), LINEAR);
-        assert_eq!(StringMapProbing::of_format_version(21), LINEAR);
     }
 
     #[test]
