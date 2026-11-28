@@ -1,4 +1,4 @@
-import { type GitLocation, isLinkedWorktree } from "./gitWorktree";
+import { type GitLocationResult, isLinkedWorktree } from "./gitWorktree";
 import type { RelocationSummary } from "./relocationSummary";
 
 /**
@@ -10,13 +10,17 @@ const INDEXED_SHARE_OF_DONOR = 0.5;
 export type AutoRelocationDecision = "relocate" | "noIndexedDonor" | "alreadyIndexed";
 
 /** How a workspace folder relates to git; only a `linkedWorktree` is relocated into automatically. */
-export type FolderKind = "notInGit" | "insideWorktree" | "mainWorktree" | "linkedWorktree";
+export type FolderKind = "notInGit" | "gitFailed" | "insideWorktree" | "mainWorktree" | "linkedWorktree";
 
 /** @param folderRoot the folder with symlinks resolved, as git prints its top level. */
-export function classifyFolder(folderRoot: string, location: GitLocation | undefined): FolderKind {
-  if (location === undefined) {
+export function classifyFolder(folderRoot: string, result: GitLocationResult): FolderKind {
+  if (result.kind === "notInGit") {
     return "notInGit";
   }
+  if (result.kind === "failed") {
+    return "gitFailed";
+  }
+  const { location } = result;
   if (location.toplevel !== folderRoot) {
     return "insideWorktree";
   }
@@ -29,11 +33,15 @@ export type CommandTarget =
   | { readonly kind: "refused"; readonly message: string };
 
 /** @param folderRoot the folder with symlinks resolved, as git prints its top level. */
-export function decideCommandTarget(folderRoot: string, location: GitLocation | undefined): CommandTarget {
-  if (location === undefined) {
+export function decideCommandTarget(folderRoot: string, result: GitLocationResult): CommandTarget {
+  if (result.kind === "notInGit") {
     return { kind: "refused", message: `${folderRoot} is not in a git worktree, so it has no index to relocate into` };
   }
-  if (classifyFolder(folderRoot, location) === "insideWorktree") {
+  if (result.kind === "failed") {
+    return { kind: "refused", message: `cannot tell whether ${folderRoot} is in a git worktree: ${result.reason}` };
+  }
+  const { location } = result;
+  if (classifyFolder(folderRoot, result) === "insideWorktree") {
     const note = `${folderRoot} is inside the worktree ${location.toplevel}, so the index is relocated into ${location.toplevel}`;
     return { kind: "relocate", root: location.toplevel, note };
   }

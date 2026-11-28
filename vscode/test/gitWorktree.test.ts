@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   describeCheckout,
+  interpretGitLocation,
   isLinkedWorktree,
   parseGitLocation,
   parseWorktreeList,
@@ -25,6 +26,46 @@ const MAIN: WorktreeEntry = { path: "/work/main", head: MAIN_HEAD, branch: "main
 const FEATURE: WorktreeEntry = { path: "/work/feature", head: FEATURE_HEAD, branch: "feature/x", isBare: false, isPrunable: false };
 const DETACHED: WorktreeEntry = { path: "/work/detached", head: DETACHED_HEAD, branch: undefined, isBare: false, isPrunable: false };
 const GONE: WorktreeEntry = { path: "/work/gone", head: MAIN_HEAD, branch: undefined, isBare: false, isPrunable: true };
+
+describe("interpretGitLocation", () => {
+  const LOCATION_OUTPUT = "/work/feature\n/work/main/.git/worktrees/feature\n/work/main/.git\n";
+
+  it("reads the location git printed", () => {
+    const result = interpretGitLocation({ kind: "exited", exitCode: 0, stdout: LOCATION_OUTPUT, stderr: "" });
+
+    const location = { toplevel: "/work/feature", gitDir: "/work/main/.git/worktrees/feature", commonDir: "/work/main/.git" };
+    assert.deepEqual(result, { kind: "found", location });
+  });
+
+  it("tells a folder outside git from a git failure", () => {
+    const stderr = "fatal: not a git repository (or any of the parent directories): .git\n";
+
+    const result = interpretGitLocation({ kind: "exited", exitCode: 128, stdout: "", stderr });
+
+    assert.deepEqual(result, { kind: "notInGit" });
+  });
+
+  it("gives git's error for any other failure", () => {
+    const stderr = "fatal: detected dubious ownership in repository at '/work/feature'\n";
+
+    const result = interpretGitLocation({ kind: "exited", exitCode: 128, stdout: "", stderr });
+
+    const reason = "git rev-parse failed (exit code 128): fatal: detected dubious ownership in repository at '/work/feature'";
+    assert.deepEqual(result, { kind: "failed", reason });
+  });
+
+  it("reports a git that could not run", () => {
+    const result = interpretGitLocation({ kind: "failed", reason: "git not found", stdout: "", stderr: "" });
+
+    assert.deepEqual(result, { kind: "failed", reason: "git not found" });
+  });
+
+  it("reports output it cannot read", () => {
+    const result = interpretGitLocation({ kind: "exited", exitCode: 0, stdout: "/work/main/.git\n", stderr: "" });
+
+    assert.deepEqual(result, { kind: "failed", reason: "unexpected git rev-parse output: /work/main/.git" });
+  });
+});
 
 describe("parseGitLocation", () => {
   it("reads the top level, git directory and common directory", () => {

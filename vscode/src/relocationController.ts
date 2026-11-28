@@ -69,7 +69,12 @@ export class RelocationController {
       return;
     }
     const root = await resolveRealPath(folder.uri.fsPath);
-    const folderKind = classifyFolder(root, await readGitLocation(root));
+    const gitLocation = await readGitLocation(root);
+    if (gitLocation.kind === "failed") {
+      this.log.warn(`${root}: cannot tell whether it is a linked worktree, not relocating: ${gitLocation.reason}`);
+      return;
+    }
+    const folderKind = classifyFolder(root, gitLocation);
     if (folderKind !== "linkedWorktree") {
       this.log.debug(`${root}: ${folderKind}, nothing to relocate`);
       return;

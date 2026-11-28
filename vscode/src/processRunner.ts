@@ -9,6 +9,8 @@ export interface ProcessRequest {
   readonly cwd: string;
   readonly timeoutMs: number;
   readonly maxBufferBytes: number;
+  /** Added to the extension host's environment. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** `exited` for any exit code; `failed` when the process could not start or was killed (timeout, signal, output too large). */
@@ -18,7 +20,8 @@ export type ProcessResult =
 
 /** Runs `request.file` without a shell; never rejects. */
 export function runProcess(request: ProcessRequest): Promise<ProcessResult> {
-  const options = { cwd: request.cwd, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, encoding: "utf8" as const };
+  const env = { ...process.env, ...request.env };
+  const options = { cwd: request.cwd, env, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, encoding: "utf8" as const };
   return new Promise((resolve) => {
     execFile(request.file, request.args, options, (error, stdout, stderr) => {
       resolve(toProcessResult(request, error, stdout, stderr));

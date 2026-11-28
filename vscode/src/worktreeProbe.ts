@@ -2,15 +2,16 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
-  type GitLocation,
-  parseGitLocation,
+  GIT_MESSAGE_LOCALE_ENV,
+  type GitLocationResult,
+  interpretGitLocation,
   parseWorktreeList,
   REV_PARSE_LOCATION_ARGS,
   selectDonorWorktrees,
   WORKTREE_LIST_ARGS,
   type WorktreeEntry,
 } from "./gitWorktree";
-import { runProcess } from "./processRunner";
+import { type ProcessRequest, runProcess } from "./processRunner";
 
 const GIT_BINARY = "git";
 const GIT_TIMEOUT_MS = 15_000;
@@ -19,10 +20,9 @@ const GIT_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 const INDEX_RELATIVE_DIR = path.join(".cache", "clangd", "index");
 const SHARD_EXTENSION = ".idx";
 
-/** `undefined` when `folder` is not in a git worktree or git fails. */
-export async function readGitLocation(folder: string): Promise<GitLocation | undefined> {
-  const stdout = await runGit(folder, REV_PARSE_LOCATION_ARGS);
-  return stdout === undefined ? undefined : parseGitLocation(stdout);
+export async function readGitLocation(folder: string): Promise<GitLocationResult> {
+  const request = { ...gitRequest(folder, REV_PARSE_LOCATION_ARGS), env: GIT_MESSAGE_LOCALE_ENV };
+  return interpretGitLocation(await runProcess(request));
 }
 
 /** Empty when git fails. */
@@ -31,8 +31,12 @@ export async function listWorktrees(folder: string): Promise<WorktreeEntry[]> {
   return stdout === undefined ? [] : parseWorktreeList(stdout);
 }
 
+function gitRequest(folder: string, args: readonly string[]): ProcessRequest {
+  return { file: GIT_BINARY, args, cwd: folder, timeoutMs: GIT_TIMEOUT_MS, maxBufferBytes: GIT_MAX_BUFFER_BYTES };
+}
+
 async function runGit(folder: string, args: readonly string[]): Promise<string | undefined> {
-  const result = await runProcess({ file: GIT_BINARY, args, cwd: folder, timeoutMs: GIT_TIMEOUT_MS, maxBufferBytes: GIT_MAX_BUFFER_BYTES });
+  const result = await runProcess(gitRequest(folder, args));
   const isSuccess = result.kind === "exited" && result.exitCode === 0;
   return isSuccess ? result.stdout : undefined;
 }

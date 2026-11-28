@@ -1,3 +1,5 @@
+import type { ProcessResult } from "./processRunner";
+
 /** Arguments that print the worktree root, its git directory and the common git directory, one per line. */
 export const REV_PARSE_LOCATION_ARGS: readonly string[] = [
   "rev-parse",
@@ -7,6 +9,12 @@ export const REV_PARSE_LOCATION_ARGS: readonly string[] = [
   "--git-common-dir",
 ];
 export const WORKTREE_LIST_ARGS: readonly string[] = ["worktree", "list", "--porcelain", "-z"];
+/** git's messages are localized; it prints {@link NOT_A_REPOSITORY_MESSAGE} only in this locale. */
+export const GIT_MESSAGE_LOCALE_ENV: Readonly<Record<string, string>> = { LC_ALL: "C" };
+
+/** git's exit code for every fatal error, including running outside a repository. */
+const FATAL_EXIT_CODE = 128;
+const NOT_A_REPOSITORY_MESSAGE = "not a git repository";
 
 const LINE_SEPARATOR = /\r?\n/;
 const FIELD_SEPARATOR = "\0";
@@ -20,6 +28,12 @@ export interface GitLocation {
   readonly gitDir: string;
   readonly commonDir: string;
 }
+
+/** What {@link REV_PARSE_LOCATION_ARGS} tells about a folder; `failed` carries git's error. */
+export type GitLocationResult =
+  | { readonly kind: "found"; readonly location: GitLocation }
+  | { readonly kind: "notInGit" }
+  | { readonly kind: "failed"; readonly reason: string };
 
 /** One record of `git worktree list --porcelain -z`. */
 export interface WorktreeEntry {
@@ -40,6 +54,25 @@ export function parseGitLocation(output: string): GitLocation | undefined {
     return undefined;
   }
   return { toplevel, gitDir, commonDir };
+}
+
+/** Tells a folder outside git from a git that failed; expects git run with {@link GIT_MESSAGE_LOCALE_ENV}. */
+export function interpretGitLocation(result: ProcessResult): GitLocationResult {
+  if (result.kind === "failed") {
+    return { kind: "failed", reason: result.reason };
+  }
+  const stderr = result.stderr.trim();
+  if (result.exitCode === FATAL_EXIT_CODE && stderr.includes(NOT_A_REPOSITORY_MESSAGE)) {
+    return { kind: "notInGit" };
+  }
+  if (result.exitCode !== 0) {
+    return { kind: "failed", reason: `git rev-parse failed (exit code ${result.exitCode}): ${stderr}` };
+  }
+  const location = parseGitLocation(result.stdout);
+  if (location === undefined) {
+    return { kind: "failed", reason: `unexpected git rev-parse output: ${result.stdout.trim()}` };
+  }
+  return { kind: "found", location };
 }
 
 export function isLinkedWorktree(location: GitLocation): boolean {

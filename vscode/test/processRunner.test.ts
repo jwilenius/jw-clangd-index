@@ -19,6 +19,12 @@ describe("runProcess", () => {
     assert.deepEqual(result, { kind: "exited", exitCode: 2, stdout: "out", stderr: "err" });
   });
 
+  it("adds the requested environment", async () => {
+    const result = await runProcess({ ...nodeRequest("process.stdout.write(process.env.JW_PROBE ?? '')"), env: { JW_PROBE: "set" } });
+
+    assert.deepEqual(result, { kind: "exited", exitCode: 0, stdout: "set", stderr: "" });
+  });
+
   it("reports a missing binary", async () => {
     const result = await runProcess({ ...nodeRequest(""), file: "/nonexistent/jw-clangd-index" });
 

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { countIndexShards, countLargestDonorIndex, resolveRealPath } from "../src/worktreeProbe";
+import { countIndexShards, countLargestDonorIndex, readGitLocation, resolveRealPath } from "../src/worktreeProbe";
 
 const INDEX_RELATIVE_DIR = path.join(".cache", "clangd", "index");
 /** Keeps the user's git configuration out of the test repository. */
@@ -67,6 +67,28 @@ describe("countLargestDonorIndex", () => {
 
   it("is 0 outside git", async () => {
     assert.equal(await countLargestDonorIndex(base), 0);
+  });
+});
+
+describe("readGitLocation", () => {
+  let base = "";
+  before(() => {
+    base = makeTempDir();
+    git(base, ["init", "--quiet", "repo"]);
+  });
+  after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  it("finds the worktree of a folder in git", async () => {
+    const repoRoot = path.join(base, "repo");
+
+    const result = await readGitLocation(repoRoot);
+
+    const gitDir = path.join(repoRoot, ".git");
+    assert.deepEqual(result, { kind: "found", location: { toplevel: repoRoot, gitDir, commonDir: gitDir } });
+  });
+
+  it("finds a folder outside git", async () => {
+    assert.deepEqual(await readGitLocation(base), { kind: "notInGit" });
   });
 });
 

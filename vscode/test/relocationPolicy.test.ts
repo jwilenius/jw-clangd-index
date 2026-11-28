@@ -2,10 +2,14 @@ import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { classifyFolder, decideAutoRelocation, decideCommandTarget, isClangdRestartNeeded } from "../src/relocationPolicy";
+import type { GitLocationResult } from "../src/gitWorktree";
 import type { RelocationSummary } from "../src/relocationSummary";
 
 const LINKED_LOCATION = { toplevel: "/work/feature", gitDir: "/work/main/.git/worktrees/feature", commonDir: "/work/main/.git" };
 const MAIN_LOCATION = { toplevel: "/work/main", gitDir: "/work/main/.git", commonDir: "/work/main/.git" };
+const IN_LINKED: GitLocationResult = { kind: "found", location: LINKED_LOCATION };
+const IN_MAIN: GitLocationResult = { kind: "found", location: MAIN_LOCATION };
+const NOT_IN_GIT: GitLocationResult = { kind: "notInGit" };
 
 function summary(relocated: number, isDryRun: boolean): RelocationSummary {
   return {
@@ -23,30 +27,34 @@ function summary(relocated: number, isDryRun: boolean): RelocationSummary {
 
 describe("classifyFolder", () => {
   it("finds a linked worktree root", () => {
-    assert.equal(classifyFolder("/work/feature", LINKED_LOCATION), "linkedWorktree");
+    assert.equal(classifyFolder("/work/feature", IN_LINKED), "linkedWorktree");
   });
 
   it("finds the main worktree root", () => {
-    assert.equal(classifyFolder("/work/main", MAIN_LOCATION), "mainWorktree");
+    assert.equal(classifyFolder("/work/main", IN_MAIN), "mainWorktree");
   });
 
   it("finds a folder inside a worktree", () => {
-    assert.equal(classifyFolder("/work/feature/src", LINKED_LOCATION), "insideWorktree");
+    assert.equal(classifyFolder("/work/feature/src", IN_LINKED), "insideWorktree");
   });
 
   it("finds a folder outside git", () => {
-    assert.equal(classifyFolder("/tmp", undefined), "notInGit");
+    assert.equal(classifyFolder("/tmp", NOT_IN_GIT), "notInGit");
+  });
+
+  it("finds a folder git failed on", () => {
+    assert.equal(classifyFolder("/work/feature", { kind: "failed", reason: "git not found" }), "gitFailed");
   });
 });
 
 describe("decideCommandTarget", () => {
   it("relocates into a worktree root as picked", () => {
-    assert.deepEqual(decideCommandTarget("/work/feature", LINKED_LOCATION), { kind: "relocate", root: "/work/feature", note: undefined });
-    assert.deepEqual(decideCommandTarget("/work/main", MAIN_LOCATION), { kind: "relocate", root: "/work/main", note: undefined });
+    assert.deepEqual(decideCommandTarget("/work/feature", IN_LINKED), { kind: "relocate", root: "/work/feature", note: undefined });
+    assert.deepEqual(decideCommandTarget("/work/main", IN_MAIN), { kind: "relocate", root: "/work/main", note: undefined });
   });
 
   it("relocates into the root of the worktree a folder is inside, and says so", () => {
-    assert.deepEqual(decideCommandTarget("/work/feature/src", LINKED_LOCATION), {
+    assert.deepEqual(decideCommandTarget("/work/feature/src", IN_LINKED), {
       kind: "relocate",
       root: "/work/feature",
       note: "/work/feature/src is inside the worktree /work/feature, so the index is relocated into /work/feature",
@@ -54,9 +62,18 @@ describe("decideCommandTarget", () => {
   });
 
   it("refuses a folder outside git", () => {
-    assert.deepEqual(decideCommandTarget("/tmp", undefined), {
+    assert.deepEqual(decideCommandTarget("/tmp", NOT_IN_GIT), {
       kind: "refused",
       message: "/tmp is not in a git worktree, so it has no index to relocate into",
+    });
+  });
+
+  it("refuses a folder git failed on, with git's error", () => {
+    const failure: GitLocationResult = { kind: "failed", reason: "git rev-parse failed (exit code 128): fatal: bad config" };
+
+    assert.deepEqual(decideCommandTarget("/work/feature", failure), {
+      kind: "refused",
+      message: "cannot tell whether /work/feature is in a git worktree: git rev-parse failed (exit code 128): fatal: bad config",
     });
   });
 });
