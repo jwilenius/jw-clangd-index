@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   describeRelocation,
-  describeRelocationProblems,
+  hasRelocationProblems,
   parseRelocationSummary,
   type RelocationSummary,
   SummaryFormatError,
@@ -174,11 +174,19 @@ describe("describeRelocation", () => {
     assert.match(describeRelocation(summary), /; compile_commands.json links into the donor worktree, so nothing was written$/);
   });
 
-  it("says what a run that relocated the shards could not do", () => {
+  it("gives each failure of a run that relocated the shards once, with its reason", () => {
     assert.equal(
       describeRelocation(INCOMPLETE_SUMMARY),
-      "relocated 9876 shards from main (12 kept, 2 failed); reindex not predicted; compile_commands.json was not relocated",
+      "relocated 9876 shards from main (12 kept, 2 failed); " +
+        "predicting the reindex failed: reading /work/feature/.cache/clangd/index; " +
+        "relocating compile_commands.json failed: parsing compilation database",
     );
+  });
+
+  it("says the reindex was not predicted when the CLI gave no reason", () => {
+    const summary: RelocationSummary = { ...SUMMARY, reindex: undefined };
+
+    assert.equal(describeRelocation(summary), "relocated 9876 shards from main (12 kept, 2 failed); reindex not predicted");
   });
 
   it("says that the CLI reported an unknown compilation database action", () => {
@@ -194,16 +202,14 @@ describe("describeRelocation", () => {
   });
 });
 
-describe("describeRelocationProblems", () => {
-  it("is undefined for a complete run", () => {
-    assert.equal(describeRelocationProblems(SUMMARY), undefined);
+describe("hasRelocationProblems", () => {
+  it("is false for a complete run", () => {
+    assert.equal(hasRelocationProblems(SUMMARY), false);
   });
 
-  it("gives the reasons of the compilation database and prediction failures", () => {
-    assert.equal(
-      describeRelocationProblems(INCOMPLETE_SUMMARY),
-      "relocating compile_commands.json failed: parsing compilation database; " +
-        "predicting the reindex failed: reading /work/feature/.cache/clangd/index",
-    );
+  it("is true when the compilation database or the prediction failed", () => {
+    assert.equal(hasRelocationProblems(INCOMPLETE_SUMMARY), true);
+    assert.equal(hasRelocationProblems({ ...SUMMARY, cdb: INCOMPLETE_SUMMARY.cdb }), true);
+    assert.equal(hasRelocationProblems({ ...SUMMARY, reindex: undefined, reindexFailure: "x" }), true);
   });
 });

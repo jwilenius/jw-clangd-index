@@ -14,7 +14,7 @@ import {
   decideCommandTarget,
   isClangdRestartNeeded,
 } from "./relocationPolicy";
-import { describeRelocation, describeRelocationProblems } from "./relocationSummary";
+import { describeRelocation, hasRelocationProblems } from "./relocationSummary";
 import { countIndexShards, countLargestDonorIndex, listWorktrees, readGitLocation, resolveRealPath } from "./worktreeProbe";
 
 const CONFIGURATION_SECTION = "jwClangdIndex";
@@ -205,11 +205,9 @@ export class RelocationController {
       await this.restartClangd();
     }
     const message = `${MESSAGE_PREFIX}: ${describeRelocation(result.summary)}`;
-    const problems = describeRelocationProblems(result.summary);
-    if (problems !== undefined) {
-      const warning = `${message}; ${problems}`;
-      this.log.warn(warning);
-      this.showWithLogAction(vscode.window.showWarningMessage, warning);
+    if (hasRelocationProblems(result.summary)) {
+      this.log.warn(message);
+      this.showWithLogAction(vscode.window.showWarningMessage, message);
       return;
     }
     this.log.info(message);

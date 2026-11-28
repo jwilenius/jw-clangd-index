@@ -174,9 +174,19 @@ export function describeRelocation(summary: RelocationSummary): string {
   const { shards } = summary;
   const verb = summary.isDryRun ? "would relocate" : "relocated";
   const keptAndFailed = `${shards.keptExisting} kept, ${shards.failed} failed`;
-  const reindex = summary.reindex === undefined ? "reindex not predicted" : `${summary.reindex.reindexedTus.length} TUs to reindex`;
+  const reindex = describeReindex(summary);
   const cdbWarning = describeCdbWarning(summary);
   return `${verb} ${shards.relocated} shards from ${path.basename(summary.donorRoot)} (${keptAndFailed}); ${reindex}${cdbWarning}`;
+}
+
+function describeReindex(summary: RelocationSummary): string {
+  if (summary.reindex !== undefined) {
+    return `${summary.reindex.reindexedTus.length} TUs to reindex`;
+  }
+  if (summary.reindexFailure !== undefined) {
+    return `predicting the reindex failed: ${summary.reindexFailure}`;
+  }
+  return "reindex not predicted";
 }
 
 function describeCdbWarning(summary: RelocationSummary): string {
@@ -185,7 +195,7 @@ function describeCdbWarning(summary: RelocationSummary): string {
     return "; no compile_commands.json, so clangd ignores the index";
   }
   if (action === "failed") {
-    return "; compile_commands.json was not relocated";
+    return `; relocating compile_commands.json failed: ${summary.cdb.reason ?? "unknown reason"}`;
   }
   if (action === "kept_tracked") {
     return "; git tracks compile_commands.json, so it was not replaced";
@@ -213,14 +223,7 @@ function describeSkippedLink(summary: RelocationSummary): string {
   return `; compile_commands.json links ${linkTarget}, so nothing was written${consequence}`;
 }
 
-/** What went wrong in a run that relocated the shards, for a warning; `undefined` when nothing did. */
-export function describeRelocationProblems(summary: RelocationSummary): string | undefined {
-  const problems: string[] = [];
-  if (summary.cdb.action === "failed") {
-    problems.push(`relocating compile_commands.json failed: ${summary.cdb.reason ?? "unknown reason"}`);
-  }
-  if (summary.reindexFailure !== undefined) {
-    problems.push(`predicting the reindex failed: ${summary.reindexFailure}`);
-  }
-  return problems.length === 0 ? undefined : problems.join("; ");
+/** Whether something went wrong in a run that relocated the shards, so it deserves a warning; {@link describeRelocation} gives the reasons. */
+export function hasRelocationProblems(summary: RelocationSummary): boolean {
+  return summary.cdb.action === "failed" || summary.reindexFailure !== undefined;
 }
