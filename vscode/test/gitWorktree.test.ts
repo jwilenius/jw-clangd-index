@@ -45,12 +45,30 @@ describe("interpretGitLocation", () => {
     assert.deepEqual(result, { kind: "notInGit" });
   });
 
+  it("tells a folder outside git when discovery stops at a mount point", () => {
+    const stderr =
+      "fatal: not a git repository (or any parent up to mount point /mnt)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n";
+
+    const result = interpretGitLocation({ kind: "exited", exitCode: 128, stdout: "", stderr });
+
+    assert.deepEqual(result, { kind: "notInGit" });
+  });
+
   it("gives git's error for any other failure", () => {
     const stderr = "fatal: detected dubious ownership in repository at '/work/feature'\n";
 
     const result = interpretGitLocation({ kind: "exited", exitCode: 128, stdout: "", stderr });
 
     const reason = "git rev-parse failed (exit code 128): fatal: detected dubious ownership in repository at '/work/feature'";
+    assert.deepEqual(result, { kind: "failed", reason });
+  });
+
+  it("gives git's error for a linked worktree whose git directory is gone", () => {
+    const stderr = "fatal: not a git repository: /x/.git/worktrees/y\n";
+
+    const result = interpretGitLocation({ kind: "exited", exitCode: 128, stdout: "", stderr });
+
+    const reason = "git rev-parse failed (exit code 128): fatal: not a git repository: /x/.git/worktrees/y";
     assert.deepEqual(result, { kind: "failed", reason });
   });
 

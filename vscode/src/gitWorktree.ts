@@ -14,7 +14,11 @@ export const GIT_MESSAGE_LOCALE_ENV: Readonly<Record<string, string>> = { LC_ALL
 
 /** git's exit code for every fatal error, including running outside a repository. */
 const FATAL_EXIT_CODE = 128;
-const NOT_A_REPOSITORY_MESSAGE = "not a git repository";
+/**
+ * git's discovery message, ending "of the parent directories)" or "parent up to mount point …)".
+ * A linked worktree whose `.git` file points at a removed gitdir prints "not a git repository: <gitdir>", a real failure.
+ */
+const NOT_A_REPOSITORY_MESSAGE = "not a git repository (or any";
 
 const LINE_SEPARATOR = /\r?\n/;
 const FIELD_SEPARATOR = "\0";
