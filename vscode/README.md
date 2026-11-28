@@ -2,7 +2,8 @@
 
 Relocates a clangd background index into a git worktree that opens without one, so clangd reindexes only the files that differ instead of the whole project.
 It runs the `jw-clangd-index` CLI of the parent directory; see the README of the repository root for how relocation works.
-Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; the `.vsix` bundles the Linux x64 binary.
+Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; each `.vsix` bundles the binary of one target: `linux-x64`, `linux-arm64`, `darwin-x64` or `darwin-arm64`.
+The macOS packages are built but have not been tested on a real Mac.
 
 ## Behaviour
 
@@ -68,24 +69,35 @@ The modules under `src/` other than `extension.ts` and `relocationController.ts`
 ## Packaging
 
 ```sh
-npm run package
+npm run package                           # the host's target
+npm run package -- --target darwin-arm64  # any supported target
 ```
 
-`package` (`scripts/package.mjs`) stops unless it runs on Linux x64, the only target the CLI is built for.
-It runs `cargo build --release` in the parent directory, copies `../target/release/jw-clangd-index` into `bin/linux-x64/` and runs `vsce package --target linux-x64 --no-dependencies` (esbuild bundles all code, so no `node_modules` are shipped), which type-checks and builds first and writes `jw-clangd-index-linux-x64-0.1.0.vsix`.
+`package` (`scripts/package.mjs`) maps the target to a Rust triple:
+
+| Target         | Rust triple                  |
+| -------------- | ---------------------------- |
+| `linux-x64`    | `x86_64-unknown-linux-musl`  |
+| `linux-arm64`  | `aarch64-unknown-linux-musl` |
+| `darwin-x64`   | `x86_64-apple-darwin`        |
+| `darwin-arm64` | `aarch64-apple-darwin`       |
+
+Linux builds are static musl binaries, so one runs on every distribution.
+Add the triple first with `rustup target add <triple>`; macOS triples build only on a Mac, which has the SDK.
+It runs `cargo build --release --target <triple>` in the parent directory, deletes `bin/` so no other target's binary ships, copies `../target/<triple>/release/jw-clangd-index` into `bin/<target>/` and runs `vsce package --target <target> --no-dependencies` (esbuild bundles all code, so no `node_modules` are shipped), which type-checks and builds first and writes `jw-clangd-index-<target>-0.1.0.vsix`.
 `LICENSE` is a symlink to the repository root's `LICENSE`, so the `.vsix` carries it.
 `THIRD-PARTY-NOTICES.txt` holds the licenses of the Rust crates in the bundled binary; `npm run notices` regenerates it with `cargo-about`, and CI fails when it is out of date.
-Install it with `code --install-extension jw-clangd-index-linux-x64-0.1.0.vsix`.
-On macOS, build the CLI there and set `jwClangdIndex.path` or put the binary on `PATH`.
+Install it with `code --install-extension jw-clangd-index-<target>-0.1.0.vsix`.
+CI (`.github/workflows/ci.yml`) packages all four targets, testing the three it can run natively, and uploads each `.vsix` as artifact `jw-clangd-index-<target>-vsix`.
 
 ## Publishing (not yet done)
 
-- Nothing is published yet; the CI workflow (`.github/workflows/ci.yml`) only uploads the `.vsix` as artifact `jw-clangd-index-vsix`.
+- Nothing is published yet; the CI workflow (`.github/workflows/ci.yml`) only uploads each target's `.vsix` as artifact `jw-clangd-index-<target>-vsix`.
 - The extension id is `jwilenius.jw-clangd-index`: publisher `jwilenius` on the VS Code Marketplace, the same publisher as jw-differ.
 - Publishing would follow jw-differ: pushing a `vscode-vX.Y.Z` tag runs a workflow that publishes the tested `.vsix` with `vsce publish --oidc --packagePath <vsix>`.
 - That uses Marketplace Trusted Publishing, so no token is stored: publisher `jwilenius` needs a policy for repository `jw-clangd-index`, the workflow file and an environment `marketplace` limited to `vscode-v*` tags, and the job needs `id-token: write`.
 - Without Trusted Publishing, a repository secret `VSCE_PAT` (an Azure DevOps token with scope Marketplace: Manage) passed to `vsce publish` works instead.
-- The `.vsix` targets `linux-x64` only, so the Marketplace offers it to Linux x64 only.
+- Publishing would upload all four target `.vsix` files of one version, so the Marketplace offers each platform its own; Windows gets none.
 
 ## License
 

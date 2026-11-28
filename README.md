@@ -16,6 +16,9 @@ cargo install --path .
 
 Requires git 2.36 or later (`git worktree list -z`).
 
+Supported platforms: Linux (x64, arm64) and macOS (x64, arm64); Windows is not supported, since the tool uses `std::os::unix`.
+Linux is tested end to end against real clangd; the macOS builds are built and tested in CI but have not been tested on a real Mac.
+
 ## Usage
 
 ### relocate
@@ -90,7 +93,7 @@ It runs the absolute path of the installing binary in the foreground and never f
 
 `vscode/` holds a thin extension that runs `relocate` when a linked git worktree opens without a clangd index, then restarts clangd so it loads the shards.
 It also offers commands to relocate on demand, from a chosen worktree, and to install the git hook.
-See [vscode/README.md](vscode/README.md) for its settings and how to build the `.vsix`.
+See [vscode/README.md](vscode/README.md) for its settings and how to build the `.vsix` of each target, e.g. `npm run package -- --target darwin-arm64` in `vscode/`.
 
 ## Supported clangd versions
 
