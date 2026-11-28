@@ -247,9 +247,11 @@ mod tests {
     fn keeps_every_key_of_a_large_map() {
         let keys: Vec<PathBuf> = candidates().take(5000).collect();
 
-        let order = string_map_order(keys.clone(), QUADRATIC);
+        for probing in [QUADRATIC, LINEAR] {
+            let order = string_map_order(keys.clone(), probing);
 
-        assert_eq!(order.iter().collect::<HashSet<_>>(), keys.iter().collect::<HashSet<_>>());
-        assert_eq!(order.len(), keys.len());
+            assert_eq!(order.iter().collect::<HashSet<_>>(), keys.iter().collect::<HashSet<_>>(), "{probing:?}");
+            assert_eq!(order.len(), keys.len(), "{probing:?}");
+        }
     }
 }
