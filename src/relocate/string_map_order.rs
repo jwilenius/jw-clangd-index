@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn probes_third_colliding_key_one_or_three_buckets_on() {
+    fn places_third_colliding_key_two_or_six_buckets_from_home() {
         // `a`, `b` and `c` share home `x`; `d` sits at `x + 3`. Linear probing puts `c` at `x + 2`,
         // quadratic probing at `x + 1 + 2 = x + 3`, which `d` holds, then at `x + 6`.
         let a = candidates().next().unwrap();
