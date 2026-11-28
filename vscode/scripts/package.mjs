@@ -23,6 +23,7 @@ if (triple === undefined) {
   console.error(`package: unsupported target ${target}; supported: ${Object.keys(RUST_TRIPLES).join(", ")}`);
   process.exit(1);
 }
+assertRustTargetInstalled(triple);
 execFileSync("cargo", ["build", "--release", "--target", triple], { cwd: CRATE_DIR, stdio: "inherit" });
 // vsce bundles all of bin/, so a binary left from another target would ship in this target's .vsix.
 fs.rmSync(BIN_DIR, { recursive: true, force: true });
@@ -30,3 +31,22 @@ const targetBinDir = path.join(BIN_DIR, target);
 fs.mkdirSync(targetBinDir, { recursive: true });
 fs.copyFileSync(path.join(CRATE_DIR, "target", triple, "release", BINARY_NAME), path.join(targetBinDir, BINARY_NAME));
 execFileSync("vsce", ["package", "--target", target, "--no-dependencies"], { stdio: "inherit" });
+
+/** Fails with the fix up front, since cargo's error for a missing target does not suggest it. */
+function assertRustTargetInstalled(rustTriple) {
+  let installedTargets;
+  try {
+    installedTargets = execFileSync("rustup", ["target", "list", "--installed"], { encoding: "utf8" });
+  } catch (error) {
+    // Without rustup, cargo reports a missing target itself.
+    if (error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  const isInstalled = installedTargets.split(/\r?\n/).includes(rustTriple);
+  if (!isInstalled) {
+    console.error(`package: the Rust target ${rustTriple} is not installed; run: rustup target add ${rustTriple}`);
+    process.exit(1);
+  }
+}
