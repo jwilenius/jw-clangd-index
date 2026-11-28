@@ -41,10 +41,6 @@ describe("classifyFolder", () => {
   it("finds a folder outside git", () => {
     assert.equal(classifyFolder("/tmp", NOT_IN_GIT), "notInGit");
   });
-
-  it("finds a folder git failed on", () => {
-    assert.equal(classifyFolder("/work/feature", { kind: "failed", reason: "git not found" }), "gitFailed");
-  });
 });
 
 describe("decideCommandTarget", () => {

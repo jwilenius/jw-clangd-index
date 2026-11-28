@@ -10,15 +10,15 @@ const INDEXED_SHARE_OF_DONOR = 0.5;
 export type AutoRelocationDecision = "relocate" | "noIndexedDonor" | "alreadyIndexed";
 
 /** How a workspace folder relates to git; only a `linkedWorktree` is relocated into automatically. */
-export type FolderKind = "notInGit" | "gitFailed" | "insideWorktree" | "mainWorktree" | "linkedWorktree";
+export type FolderKind = "notInGit" | "insideWorktree" | "mainWorktree" | "linkedWorktree";
+
+/** A git location git could tell; each caller reports a `failed` one in its own way first. */
+export type KnownGitLocation = Exclude<GitLocationResult, { readonly kind: "failed" }>;
 
 /** @param folderRoot the folder with symlinks resolved, as git prints its top level. */
-export function classifyFolder(folderRoot: string, result: GitLocationResult): FolderKind {
+export function classifyFolder(folderRoot: string, result: KnownGitLocation): FolderKind {
   if (result.kind === "notInGit") {
     return "notInGit";
-  }
-  if (result.kind === "failed") {
-    return "gitFailed";
   }
   const { location } = result;
   if (location.toplevel !== folderRoot) {
