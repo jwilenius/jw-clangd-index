@@ -6,7 +6,7 @@ Copies a clangd background index from one git worktree to another, so a new work
 
 clangd stores absolute paths in every shard of `.cache/clangd/index` and names each shard after a hash of its file's path.
 A fresh worktree therefore gets no use from another checkout's index, and indexing a large project again takes a long time.
-`jw-clangd-index` rewrites the paths, renames the shards and leaves clangd only the files that really differ to reindex.
+`jw-clangd-index` rewrites the paths and renames the shards, so clangd reindexes only the files that differ.
 
 ## Install
 
@@ -16,8 +16,10 @@ cargo install --path .
 
 Requires git 2.36 or later (`git worktree list -z`).
 
-Supported platforms: Linux (x64, arm64) and macOS (x64, arm64); Windows is not supported, since the tool uses `std::os::unix`.
-Linux is tested end to end against real clangd; CI builds both macOS targets but runs the tests only for darwin-arm64, and neither has been tested on a real Mac.
+Supported platforms: Linux (x64, arm64) and macOS (x64, arm64).
+Windows is not supported, because the tool uses `std::os::unix`.
+Linux is tested end to end against real clangd.
+CI builds both macOS targets but runs the tests only for darwin-arm64, and neither target has been tested on a real Mac.
 
 ## Usage
 
