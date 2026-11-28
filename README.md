@@ -31,23 +31,42 @@ jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW].
 ```
 
 - `--to` defaults to the worktree of the current directory.
-- `--to` and `--from` must be worktree roots; a directory inside a worktree is an error, one outside any worktree is accepted.
+- `--to` and `--from` must be worktree roots: a directory inside a worktree is an error, but one outside any worktree is accepted.
 - `--from` defaults to the indexed worktree of the same repository whose `HEAD` differs from the target's in the fewest files; on a tie the main worktree wins, then the smaller path.
 - Paths under the donor root become paths under the target root; `--map` adds further roots, such as an out-of-tree build directory.
 - When the donor root as given (or as `git worktree list` prints it) goes through a symlink, paths under both forms are mapped.
-- A warning reports a relocation in which no shard path, or no compilation database string, was under a mapped root.
-- Shards of files deleted in the target (relative to the donor's `HEAD`) are not copied; a file removed only from the git index (`git rm --cached`) still exists, even when ignored, and keeps its shard.
+- The tool warns when no shard path, or no compilation database string, was under a mapped root.
+- Shards of files deleted in the target (relative to the donor's `HEAD`) are not copied.
+  A file removed only from the git index (`git rm --cached`) still exists, even when ignored, so it keeps its shard.
 - Shards that already exist in the target are replaced; `--keep-existing` keeps them.
-- It also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten, unless `--no-relocate-cdb`; an existing readable target database is replaced, or kept with `--keep-existing`.
+- Unless `--no-relocate-cdb` is given, it also copies the donor's `compile_commands.json` (or `build/compile_commands.json`) with paths rewritten.
+  An existing readable target database is replaced, or kept with `--keep-existing`.
 - When the target's database path is a symlink, such as a tracked one into the build directory, the database is written where it points (creating the directory), so the symlink stays.
-- A database path that leads to the donor's database, into a donor nested in the target (such as under `.claude/worktrees`), or outside the target, is not written through; the summary reports it as skipped with the reason.
-- A database file that git tracks in the target is never replaced, so relocation leaves the worktree clean; the summary reports it as kept with the reason.
-  When git fails in a target inside a repository, so it cannot tell whether it tracks the file, nothing is written and the summary reports the action as failed with git's error.
-- With `--no-relocate-cdb` it warns when the target has no compilation database, because clangd then ignores the index.
+- The database is not written through a symlink that leads to the donor's database, into a donor nested in the target (such as under `.claude/worktrees`), or outside the target.
+  The summary reports it as skipped, with the reason.
+- A database file that git tracks in the target is never replaced, so relocation leaves the worktree clean.
+  The summary reports it as kept, with the reason.
+  When git fails in a target inside a repository, the tool cannot tell whether git tracks the file, so it does not write the database and the summary reports the action as failed with git's error.
+- With `--no-relocate-cdb`, it warns when the target has no compilation database, because clangd then ignores the index.
 - `--dry-run` does everything in memory and writes nothing.
-- The summary on stdout lists donor, target, shard counts, failures, the compilation database action and the translation units clangd is predicted to reindex.
-- `--json` prints the summary as one JSON object instead: `is_dry_run`, `donor_root`, `donor_changed_files` (`null` with `--from`), `target_root`, `shards` (`relocated`, `kept_existing`, `skipped_deleted`, `skipped_unsupported_version`, `failed`), `cdb` (`action`: `target_has_one`, `target_has_none`, `donor_has_none`, `kept_existing`, `written`, `kept_tracked`, `skipped_link` or `failed`; `path` or `null`; `reason`, `tracked_by_git` for `kept_tracked`, `points_at_donor_cdb`, `points_into_donor` or `leaves_target` for `skipped_link`, the error message for `failed`, else `null`; `target_has_cdb`, whether the target has a readable `compile_commands.json` or `build/compile_commands.json` after the run, counting the one a dry run would write, without which clangd ignores the index), `reindex` (`has_cdb_main_files`, all `reindexed_tus`, `stale_files`, all `main_files_without_shard`; `null` when the prediction failed), `reindex_failure` (the prediction's error message, else `null`) and `elapsed_seconds`.
-- A per-shard failure, and a failure to relocate the compilation database or predict the reindex after the shards are written, is a warning reported in the summary; a fatal error exits with 2.
+- The summary on stdout lists the donor, the target, the shard counts, the failures, the compilation database action and the translation units (TUs) clangd is predicted to reindex.
+- `--json` prints the summary as one JSON object instead, with these fields:
+  - `is_dry_run`.
+  - `donor_root`, and `donor_changed_files` (`null` with `--from`).
+  - `target_root`.
+  - `shards`: `relocated`, `kept_existing`, `skipped_deleted`, `skipped_unsupported_version` and `failed`.
+  - `cdb`, the compilation database action:
+    - `action`: `target_has_one`, `target_has_none`, `donor_has_none`, `kept_existing`, `written`, `kept_tracked`, `skipped_link` or `failed`.
+    - `path`, or `null`.
+    - `reason`: `tracked_by_git` for `kept_tracked`; `points_at_donor_cdb`, `points_into_donor` or `leaves_target` for `skipped_link`; the error message for `failed`; else `null`.
+    - `target_has_cdb`: whether the target has a readable `compile_commands.json` or `build/compile_commands.json` after the run, counting the one a dry run would write.
+      Without one, clangd ignores the index.
+  - `reindex`: `has_cdb_main_files`, the full lists `reindexed_tus` and `main_files_without_shard`, and the count `stale_files`; `null` when the prediction failed.
+  - `reindex_failure`: the prediction's error message, else `null`.
+  - `elapsed_seconds`.
+- A failure on one shard is a warning reported in the summary.
+  So is a failure to relocate the compilation database or to predict the reindex after the shards are written.
+- A fatal error exits with 2.
 
 ### dump
 
