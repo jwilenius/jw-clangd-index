@@ -83,7 +83,7 @@ jw-clangd-index diff DIR_A DIR_B [--map OLD=NEW]... [--ignore-command]
 ```
 
 Relocates the shards of `DIR_A` in memory through the `--map` roots, then compares them with `DIR_B` shard by shard.
-It lists shards only in A, only in B and differing ones with the differing parts (version, symbols, refs, relations, sources, command).
+It lists the shards found only in A, those found only in B, and those that differ, with the parts that differ (version, symbols, refs, relations, sources, command).
 Shards of an unsupported format version on either side are listed as skipped and left out of the comparison.
 Exits with 0 when equal, 1 when different, 2 on error.
 Use it to check a relocated index against one clangd built in the target itself.
@@ -96,7 +96,8 @@ jw-clangd-index install-hook [--repo PATH] [--no-relocate-cdb] [--keep-existing]
 
 Writes a `post-checkout` hook into `core.hooksPath`, or else the `hooks` directory of the repository's common git directory, which all worktrees share.
 Works in a bare repository too, unless `core.hooksPath` is relative.
-A hook that this tool did not write is never replaced unless `--force`; the error shows the line to add to it instead.
+A hook that this tool did not write is replaced only with `--force`.
+Without it, the error shows the line to add to that hook instead.
 Installing again replaces this tool's own hook.
 `--no-relocate-cdb` and `--keep-existing` make the hook pass the same flags to `relocate`.
 
@@ -104,7 +105,8 @@ Installing again replaces this tool's own hook.
 
 Relocation can always be run by hand: `cd <new-worktree> && jw-clangd-index relocate`.
 The [VS Code extension](#vs-code-extension) does it automatically when a linked worktree opens.
-`install-hook` installs an optional `post-checkout` hook that does it on `git worktree add` (see [Hook workflow](#hook-workflow)), which helps for worktrees used outside VS Code or created by agents.
+`install-hook` installs an optional `post-checkout` hook that does it on `git worktree add` (see [Hook workflow](#hook-workflow)).
+The hook helps for worktrees used outside VS Code or created by agents.
 
 ## Hook workflow
 
