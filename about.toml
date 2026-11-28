@@ -1,8 +1,8 @@
 # cargo-about configuration for vscode/THIRD-PARTY-NOTICES.txt; regenerate it with `npm run notices` in vscode/.
-# Only the crates linked into the bundled linux-x64 binary are listed: no dev or build dependencies.
+# Only the crates linked into a bundled binary of a packaged target are listed: no dev or build dependencies.
 # The licenses are in priority order: a crate under "Unlicense OR MIT" is listed under the Unlicense, one
 # under "MIT OR Apache-2.0" under MIT.
 accepted = ["Unlicense", "MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSL-1.0"]
-targets = ["x86_64-unknown-linux-gnu"]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "aarch64-apple-darwin"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
