@@ -136,9 +136,11 @@ Each shard is written back in the format version it was read in; the tool never 
 | 23 | 20 | linear, as clangd 23 |
 | llvm main (2026-11) | 21 | linear |
 
-Formats 19 and 20 share one layout; 20 only adds a `RefKind` bit (`Call`) and a symbol flag (`HasDocComment`), and 21 adds `Symbol::Tags`.
+Formats 19 and 20 share one layout; 20 only adds a `RefKind` bit (`Call`) and a symbol flag (`HasDocComment`).
+Format 21 adds `Symbol::Tags`.
 LLVM 23 switched `StringMap` from quadratic to linear probing (llvm-project `a296bdef76`).
-Format 20 alone does not tell clangd 20 to 22 from 23, so for it the prediction takes the clangd major from the `-resource-dir=<install>/lib/clang/<major>` that clangd adds to each compile command it stores in a translation unit's shard:
+Format 20 alone does not tell clangd 20 to 22 from 23.
+For format 20 the prediction therefore takes the clangd major version from the `-resource-dir=<install>/lib/clang/<major>` flag that clangd adds to each compile command it stores in a TU's shard:
 
 | Newest TU shard format | Newest clangd major in the `-resource-dir=` of those shards | Probing |
 | --- | --- | --- |
@@ -149,7 +151,8 @@ Format 20 alone does not tell clangd 20 to 22 from 23, so for it the prediction 
 | 21 | any | linear |
 
 The major is the number before the first `.` in the directory's last component, so `/usr/lib/llvm-21/lib/clang/21` and `.../lib/clang/21.1.0` both give 21.
-clangd adds the flag only when the command sets no resource directory itself, so a command with its own `-resource-dir=` names that directory's clang instead, and one with only the separate `-resource-dir <dir>` form names none.
+clangd adds the flag only when the command sets no resource directory itself.
+A command with its own `-resource-dir=` therefore names that directory's clang instead, and a command with only the separate `-resource-dir <dir>` form names none.
 Verified end to end with clangd 19.1.2, 22.1.6 and 23.1.0.
 
 ## How it works
