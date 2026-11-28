@@ -16,6 +16,10 @@ use porcelain::{FileChange, WorktreeEntry, parse_name_status, parse_path_list, p
 const CONFIG_KEY_MISSING_EXIT_CODE: i32 = 1;
 /// `git ls-files --error-unmatch` exits with this code when the index lacks the path.
 const PATH_UNTRACKED_EXIT_CODE: i32 = 1;
+/// git exits with this code on every fatal error, including outside a repository.
+const FATAL_EXIT_CODE: i32 = 128;
+/// git's message outside a repository, in the C locale.
+const NOT_A_REPOSITORY_MESSAGE: &str = "not a git repository";
 /// Variables git exports to hooks that point a git command at a repository, index or configuration
 /// regardless of `-C`; removed so every command reads the repository of its own directory.
 pub const REPOSITORY_ENV_VARS: [&str; 11] = [
@@ -84,6 +88,21 @@ impl GitRepo {
         parse_name_status(&self.run(&["diff", "--name-status", "-z", "--no-renames", base])?)
     }
 
+    /// Whether the directory is inside a git repository; an error when git cannot tell, such as when it
+    /// is not installed or the repository is unreadable.
+    pub fn is_in_repository(&self) -> Result<bool> {
+        let args = ["rev-parse", "--git-dir"];
+        // The C locale keeps the message that tells "outside a repository" from other fatal errors in English.
+        let output = self.command(&args).env("LC_ALL", "C").output().context("running git (is it installed?)")?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let is_outside_repository = output.status.code() == Some(FATAL_EXIT_CODE) && stderr.contains(NOT_A_REPOSITORY_MESSAGE);
+        if is_outside_repository {
+            return Ok(false);
+        }
+        self.checked(&args, output)?;
+        Ok(true)
+    }
+
     /// Whether the index tracks the file at `path`, absolute or relative to the directory.
     pub fn is_tracked(&self, path: &Path) -> Result<bool> {
         let path = path.to_str().with_context(|| format!("{} is not UTF-8", path.display()))?;
@@ -102,11 +121,16 @@ impl GitRepo {
     }
 
     fn output(&self, args: &[&str]) -> Result<Output> {
+        self.command(args).output().context("running git (is it installed?)")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new("git");
         for name in REPOSITORY_ENV_VARS {
             command.env_remove(name);
         }
-        command.arg("-C").arg(&self.dir).args(args).output().context("running git (is it installed?)")
+        command.arg("-C").arg(&self.dir).args(args);
+        command
     }
 
     fn checked(&self, args: &[&str], output: Output) -> Result<Vec<u8>> {

@@ -37,6 +37,7 @@ jw-clangd-index relocate [--from DONOR_ROOT] [--to TARGET_ROOT] [--map OLD=NEW].
 - When the target's database path is a symlink, such as a tracked one into the build directory, the database is written where it points (creating the directory), so the symlink stays.
 - A database path that leads to the donor's database, into a donor nested in the target (such as under `.claude/worktrees`), or outside the target, is not written through; the summary reports it as skipped with the reason.
 - A database file that git tracks in the target is never replaced, so relocation leaves the worktree clean; the summary reports it as kept with the reason.
+  When git fails in a target inside a repository, so it cannot tell whether it tracks the file, nothing is written and the summary reports the action as failed with git's error.
 - With `--no-relocate-cdb` it warns when the target has no compilation database, because clangd then ignores the index.
 - `--dry-run` does everything in memory and writes nothing.
 - The summary on stdout lists donor, target, shard counts, failures, the compilation database action and the translation units clangd is predicted to reindex.

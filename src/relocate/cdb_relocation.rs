@@ -106,7 +106,7 @@ pub fn relocate_cdb(request: &CdbRelocationRequest) -> Result<CdbOutcome> {
     if let Some(reason) = find_link_skip_reason(&target_cdb, &donor_cdb, request)? {
         return Ok(CdbOutcome::SkippedLink { link: target_link, reason });
     }
-    if is_tracked_in_target(&target_cdb, request.target_root) {
+    if is_tracked_in_target(&target_cdb, request.target_root)? {
         return Ok(CdbOutcome::KeptTracked(target_cdb));
     }
 
@@ -192,15 +192,15 @@ fn find_link_skip_reason(target_cdb: &Path, donor_cdb: &Path, request: &CdbReloc
     Ok(None)
 }
 
-/// A target outside git, or a path git cannot answer for, counts as untracked.
-fn is_tracked_in_target(target_cdb: &Path, target_root: &Path) -> bool {
-    match GitRepo::new(target_root).is_tracked(target_cdb) {
-        Ok(is_tracked) => is_tracked,
-        Err(error) => {
-            log::debug!("treating {} as untracked: {error:#}", target_cdb.display());
-            false
-        }
+/// A target outside git counts as untracked; any other git failure is an error, so the file is not
+/// overwritten.
+fn is_tracked_in_target(target_cdb: &Path, target_root: &Path) -> Result<bool> {
+    let git = GitRepo::new(target_root);
+    if !git.is_in_repository()? {
+        log::debug!("{} is not in a git repository, so nothing in it is tracked", target_root.display());
+        return Ok(false);
     }
+    git.is_tracked(target_cdb)
 }
 
 fn canonicalize_root(root: &Path) -> Result<PathBuf> {
@@ -396,6 +396,31 @@ mod tests {
 
         assert!(error.to_string().contains("levels of symlinks"), "{error:#}");
         assert!(!temp.path().join("target/build").exists());
+    }
+
+    #[test]
+    fn fails_without_writing_when_git_cannot_read_the_target_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let donor_root = temp.path().join("donor");
+        let target_root = temp.path().join("target");
+        write_donor_cdb(&donor_root);
+        fs::create_dir_all(&target_root).unwrap();
+        let git_init = std::process::Command::new("git").args(["init", "--quiet"]).current_dir(&target_root).status().unwrap();
+        assert!(git_init.success());
+        fs::write(target_root.join(".git/index"), "corrupt").unwrap();
+        let path_map = path_map();
+        let request = CdbRelocationRequest {
+            donor_root: &donor_root,
+            target_root: &target_root,
+            path_map: &path_map,
+            is_overwrite: true,
+            is_dry_run: false,
+        };
+
+        let error = relocate_cdb(&request).unwrap_err();
+
+        assert!(error.to_string().contains("ls-files"), "{error:#}");
+        assert!(!target_root.join("build/compile_commands.json").exists());
     }
 
     #[test]
