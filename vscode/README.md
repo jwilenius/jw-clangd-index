@@ -5,6 +5,42 @@ It runs the `jw-clangd-index` CLI of the parent directory; see the README of the
 Like the CLI, which uses `std::os::unix`, it works on Linux and macOS only; each `.vsix` bundles the binary of one target: `linux-x64`, `linux-arm64`, `darwin-x64` or `darwin-arm64`.
 The macOS packages are built but have not been tested on a real Mac.
 
+## Getting started
+
+Requirements:
+
+- The clangd extension (`llvm-vs-code-extensions.vscode-clangd`) with background indexing, which is on by default.
+- A worktree that clangd has already indexed (`.cache/clangd/index`), usually the main checkout.
+- Linux or macOS; the `.vsix` bundles the CLI, so nothing else needs installing.
+
+Typical flow:
+
+1. clangd indexes the main checkout once, as usual.
+2. Run `git worktree add ../feature`, then open `../feature` in VS Code.
+3. The extension sees a linked worktree with less than half as many shards as its best donor.
+   It runs `jw-clangd-index relocate --keep-existing`, which picks as donor the indexed worktree whose `HEAD` differs least, and copies its shards and `compile_commands.json` with paths rewritten.
+   It then restarts clangd and shows a status-bar message such as `relocated 4765 shards from main (0 kept, 0 failed); 3 TUs to reindex`.
+4. clangd reindexes only the files that differ.
+
+It does nothing for:
+
+- the main worktree, a folder that is not a worktree root, or a folder outside git;
+- a repository with no indexed worktree yet, which it only logs;
+- a folder that is already indexed.
+
+To relocate by hand, see [Commands](#commands):
+
+- `Relocate index` relocates into a folder now, from the automatically chosen donor.
+- `Relocate index from…` lets you pick the donor.
+- `Install git hook` makes `git worktree add` relocate outside VS Code too.
+
+Troubleshooting:
+
+- A failed run shows a warning with a Show Log button; the `jw-clangd-index` output channel logs every command and its output.
+- If clangd writes more than half the shards before the extension checks, the folder counts as indexed and nothing is relocated; run `Relocate index` by hand.
+
+[Behaviour](#behaviour) describes each step in detail.
+
 ## Behaviour
 
 - The extension activates in workspaces that contain `.git` (a directory in the main worktree, a file in a linked one).
