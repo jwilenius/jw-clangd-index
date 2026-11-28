@@ -10,7 +10,7 @@ const DRY_RUN_SUMMARY = JSON.stringify({
   donor_changed_files: null,
   target_root: "/work/feature",
   shards: { relocated: 3, kept_existing: 0, skipped_deleted: 0, skipped_unsupported_version: 0, failed: 0 },
-  cdb: { action: "donor_has_none", path: null, reason: null },
+  cdb: { action: "donor_has_none", path: null, reason: null, target_has_cdb: false },
   reindex: { has_cdb_main_files: false, reindexed_tus: [], stale_files: 0, main_files_without_shard: [] },
   reindex_failure: null,
   elapsed_seconds: 0.01,

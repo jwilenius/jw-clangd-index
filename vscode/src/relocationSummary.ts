@@ -13,7 +13,7 @@ const KNOWN_CDB_ACTIONS = [
 ] as const;
 /** `unknown` stands for an action of a newer CLI, which the extension cannot describe. */
 export type CdbAction = (typeof KNOWN_CDB_ACTIONS)[number] | "unknown";
-/** Actions after which the target has no compilation database, so clangd ignores the index. */
+/** Actions after which a CLI without `cdb.target_has_cdb` leaves the target without a compilation database. */
 const CDB_MISSING_ACTIONS: readonly CdbAction[] = ["target_has_none", "donor_has_none"];
 
 export interface ShardCounts {
@@ -29,6 +29,8 @@ export interface CdbSummary {
   readonly path: string | undefined;
   /** Why the database was not written, for `kept_tracked`, `skipped_link` and `failed`. */
   readonly reason: string | undefined;
+  /** Whether the target has a usable database after the run, without which clangd ignores the index; `undefined` from a CLI that predates the field. */
+  readonly targetHasCdb: boolean | undefined;
 }
 
 export interface ReindexSummary {
@@ -96,6 +98,7 @@ function parseCdbSummary(cdb: JsonObject): CdbSummary {
     action: isKnownCdbAction(action) ? action : "unknown",
     path: readOptionalString(cdb, "path"),
     reason: readOptionalString(cdb, "reason"),
+    targetHasCdb: readOptionalBoolean(cdb, "target_has_cdb"),
   };
 }
 
@@ -160,6 +163,11 @@ function readBoolean(object: JsonObject, key: string): boolean {
   return value;
 }
 
+function readOptionalBoolean(object: JsonObject, key: string): boolean | undefined {
+  const value = object[key];
+  return value === undefined || value === null ? undefined : readBoolean(object, key);
+}
+
 function readStringArray(object: JsonObject, key: string): string[] {
   const value = object[key];
   const isStringArray = Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -189,26 +197,6 @@ function describeReindex(summary: RelocationSummary): string {
   return "reindex not predicted";
 }
 
-function describeCdbWarning(summary: RelocationSummary): string {
-  const { action } = summary.cdb;
-  if (CDB_MISSING_ACTIONS.includes(action)) {
-    return "; no compile_commands.json, so clangd ignores the index";
-  }
-  if (action === "failed") {
-    return `; relocating compile_commands.json failed: ${summary.cdb.reason ?? "unknown reason"}`;
-  }
-  if (action === "kept_tracked") {
-    return "; git tracks compile_commands.json, so it was not replaced";
-  }
-  if (action === "skipped_link") {
-    return describeSkippedLink(summary);
-  }
-  if (action === "unknown") {
-    return "; compile_commands.json: unknown result, see the log";
-  }
-  return "";
-}
-
 /** Where a skipped `compile_commands.json` link points, by its `reason`. */
 const LINK_TARGETS: Readonly<Record<string, string>> = {
   points_at_donor_cdb: "to the donor's database",
@@ -216,11 +204,48 @@ const LINK_TARGETS: Readonly<Record<string, string>> = {
   leaves_target: "outside the worktree",
 };
 
-function describeSkippedLink(summary: RelocationSummary): string {
-  const linkTarget = LINK_TARGETS[summary.cdb.reason ?? ""] ?? "outside the worktree";
-  const consequence =
-    summary.reindex?.hasCdbMainFiles === false ? ", and clangd ignores the index until the worktree has a usable one" : "";
-  return `; compile_commands.json links ${linkTarget}, so nothing was written${consequence}`;
+function describeCdbWarning(summary: RelocationSummary): string {
+  const actionNote = describeCdbAction(summary.cdb);
+  const isCdbMissing = isTargetCdbMissing(summary);
+  if (actionNote === undefined) {
+    return isCdbMissing ? "; no compile_commands.json, so clangd ignores the index" : "";
+  }
+  const consequence = isCdbMissing ? ", and clangd ignores the index until the worktree has a usable one" : "";
+  return `; ${actionNote}${consequence}`;
+}
+
+/** What `relocate` did with the database, when that deserves a note. */
+function describeCdbAction(cdb: CdbSummary): string | undefined {
+  switch (cdb.action) {
+    case "failed":
+      return `relocating compile_commands.json failed: ${cdb.reason ?? "unknown reason"}`;
+    case "kept_tracked":
+      return "git tracks compile_commands.json, so it was not replaced";
+    case "skipped_link": {
+      const linkTarget = LINK_TARGETS[cdb.reason ?? ""] ?? "outside the worktree";
+      return `compile_commands.json links ${linkTarget}, so nothing was written`;
+    }
+    case "unknown":
+      return "compile_commands.json: unknown result, see the log";
+    case "target_has_one":
+    case "target_has_none":
+    case "donor_has_none":
+    case "kept_existing":
+    case "written":
+      return undefined;
+  }
+}
+
+/** A CLI that predates `cdb.target_has_cdb` implies it by the action, or for a skipped link by the prediction, when there is one. */
+function isTargetCdbMissing(summary: RelocationSummary): boolean {
+  const { action, targetHasCdb } = summary.cdb;
+  if (targetHasCdb !== undefined) {
+    return !targetHasCdb;
+  }
+  if (action === "skipped_link") {
+    return summary.reindex?.hasCdbMainFiles === false;
+  }
+  return CDB_MISSING_ACTIONS.includes(action);
 }
 
 /** Whether something went wrong in a run that relocated the shards, so it deserves a warning; {@link describeRelocation} gives the reasons. */

@@ -25,7 +25,8 @@ const SUMMARY_JSON = `{
   "cdb": {
     "action": "written",
     "path": "/work/feature/compile_commands.json",
-    "reason": null
+    "reason": null,
+    "target_has_cdb": true
   },
   "reindex": {
     "has_cdb_main_files": true,
@@ -43,7 +44,7 @@ const SUMMARY: RelocationSummary = {
   donorChangedFiles: 4,
   targetRoot: "/work/feature",
   shards: { relocated: 9876, keptExisting: 12, skippedDeleted: 1, skippedUnsupportedVersion: 0, failed: 2 },
-  cdb: { action: "written", path: "/work/feature/compile_commands.json", reason: undefined },
+  cdb: { action: "written", path: "/work/feature/compile_commands.json", reason: undefined, targetHasCdb: true },
   reindex: {
     hasCdbMainFiles: true,
     reindexedTus: ["/work/feature/src/a.cpp", "/work/feature/src/b.cpp"],
@@ -57,7 +58,7 @@ const SUMMARY: RelocationSummary = {
 /** {@link SUMMARY} of a run whose compilation database and prediction failed. */
 const INCOMPLETE_SUMMARY: RelocationSummary = {
   ...SUMMARY,
-  cdb: { action: "failed", path: undefined, reason: "parsing compilation database" },
+  cdb: { action: "failed", path: undefined, reason: "parsing compilation database", targetHasCdb: true },
   reindex: undefined,
   reindexFailure: "reading /work/feature/.cache/clangd/index",
 };
@@ -78,24 +79,29 @@ describe("parseRelocationSummary", () => {
   });
 
   it("maps null donor_changed_files, cdb.path and cdb.reason to undefined", () => {
-    const json = withField(["cdb"], { action: "donor_has_none", path: null, reason: null });
+    const json = withField(["cdb"], { action: "donor_has_none", path: null, reason: null, target_has_cdb: false });
 
     const summary = parseRelocationSummary(withField(["donor_changed_files"], null, json));
 
     assert.equal(summary.donorChangedFiles, undefined);
-    assert.deepEqual(summary.cdb, { action: "donor_has_none", path: undefined, reason: undefined });
+    assert.deepEqual(summary.cdb, { action: "donor_has_none", path: undefined, reason: undefined, targetHasCdb: false });
   });
 
   it("reads the reason a tracked compilation database was kept", () => {
-    const tracked = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" };
+    const tracked = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git", target_has_cdb: true };
 
     const summary = parseRelocationSummary(withField(["cdb"], tracked));
 
-    assert.deepEqual(summary.cdb, { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" });
+    assert.deepEqual(summary.cdb, {
+      action: "kept_tracked",
+      path: "/work/feature/compile_commands.json",
+      reason: "tracked_by_git",
+      targetHasCdb: true,
+    });
   });
 
   it("reads a failed compilation database and prediction", () => {
-    const cdb = { action: "failed", path: null, reason: "parsing compilation database" };
+    const cdb = { action: "failed", path: null, reason: "parsing compilation database", target_has_cdb: true };
     const json = withField(["reindex_failure"], "reading /work/feature/.cache/clangd/index", withField(["cdb"], cdb));
 
     const summary = parseRelocationSummary(withField(["reindex"], null, json));
@@ -107,12 +113,17 @@ describe("parseRelocationSummary", () => {
     assert.throws(() => parseRelocationSummary(withField(["shards", "relocated"], undefined)), SummaryFormatError);
   });
 
-  it("reads the summary of a CLI that predates cdb.reason and reindex_failure", () => {
-    const json = withField(["cdb", "reason"], undefined, withField(["reindex_failure"], undefined));
+  it("reads the summary of a CLI that predates cdb.reason, cdb.target_has_cdb and reindex_failure", () => {
+    const withoutCdbFields = withField(["cdb", "target_has_cdb"], undefined, withField(["cdb", "reason"], undefined));
+    const json = withField(["reindex_failure"], undefined, withoutCdbFields);
 
     const summary = parseRelocationSummary(json);
 
-    assert.deepEqual(summary, SUMMARY);
+    assert.deepEqual(summary, { ...SUMMARY, cdb: { ...SUMMARY.cdb, targetHasCdb: undefined } });
+  });
+
+  it("rejects a cdb.target_has_cdb that is not a boolean", () => {
+    assert.throws(() => parseRelocationSummary(withField(["cdb", "target_has_cdb"], "yes")), /target_has_cdb is not a boolean/);
   });
 
   it("rejects an optional field of the wrong type", () => {
@@ -144,20 +155,66 @@ describe("describeRelocation", () => {
   });
 
   it("warns when the target has no compilation database", () => {
-    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "target_has_none", path: undefined, reason: undefined } };
+    const cdb = { action: "target_has_none", path: undefined, reason: undefined, targetHasCdb: false } as const;
 
-    assert.match(describeRelocation(summary), /; no compile_commands.json, so clangd ignores the index$/);
+    assert.match(describeRelocation({ ...SUMMARY, cdb }), /; no compile_commands.json, so clangd ignores the index$/);
+  });
+
+  it("does not warn when the donor has no compilation database but the target has one", () => {
+    const cdb = { action: "donor_has_none", path: undefined, reason: undefined, targetHasCdb: true } as const;
+
+    assert.equal(describeRelocation({ ...SUMMARY, cdb }), describeRelocation(SUMMARY));
+  });
+
+  it("warns about a donor without a compilation database for a CLI that predates target_has_cdb", () => {
+    const cdb = { action: "donor_has_none", path: undefined, reason: undefined, targetHasCdb: undefined } as const;
+
+    assert.match(describeRelocation({ ...SUMMARY, cdb }), /; no compile_commands.json, so clangd ignores the index$/);
+  });
+
+  it("warns that clangd ignores the index after a failed relocation leaves the target without a database", () => {
+    const cdb = { action: "failed", path: undefined, reason: "parsing compilation database", targetHasCdb: false } as const;
+
+    assert.match(
+      describeRelocation({ ...SUMMARY, cdb }),
+      /; relocating compile_commands.json failed: parsing compilation database, and clangd ignores the index until the worktree has a usable one$/,
+    );
   });
 
   it("warns that nothing was written when the compilation database links outside the worktree", () => {
-    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "leaves_target" } as const;
+    const cdb = {
+      action: "skipped_link",
+      path: "/work/feature/compile_commands.json",
+      reason: "leaves_target",
+      targetHasCdb: true,
+    } as const;
     const summary: RelocationSummary = { ...SUMMARY, cdb };
 
     assert.match(describeRelocation(summary), /; compile_commands.json links outside the worktree, so nothing was written$/);
   });
 
-  it("warns that clangd ignores the index behind a skipped link without a usable database", () => {
-    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "points_at_donor_cdb" } as const;
+  it("warns that clangd ignores the index behind a skipped link without a usable database, also when the prediction failed", () => {
+    const cdb = {
+      action: "skipped_link",
+      path: "/work/feature/compile_commands.json",
+      reason: "points_at_donor_cdb",
+      targetHasCdb: false,
+    } as const;
+    const summary: RelocationSummary = { ...SUMMARY, cdb, reindex: undefined, reindexFailure: "x" };
+
+    assert.match(
+      describeRelocation(summary),
+      /; compile_commands.json links to the donor's database, so nothing was written, and clangd ignores the index until the worktree has a usable one$/,
+    );
+  });
+
+  it("tells by the prediction whether clangd ignores the index behind a skipped link for a CLI that predates target_has_cdb", () => {
+    const cdb = {
+      action: "skipped_link",
+      path: "/work/feature/compile_commands.json",
+      reason: "points_at_donor_cdb",
+      targetHasCdb: undefined,
+    } as const;
     const reindex = { hasCdbMainFiles: false, reindexedTus: [], staleFiles: 0, mainFilesWithoutShard: [] };
     const summary: RelocationSummary = { ...SUMMARY, cdb, reindex };
 
@@ -168,7 +225,12 @@ describe("describeRelocation", () => {
   });
 
   it("names a link into the donor worktree", () => {
-    const cdb = { action: "skipped_link", path: "/work/feature/compile_commands.json", reason: "points_into_donor" } as const;
+    const cdb = {
+      action: "skipped_link",
+      path: "/work/feature/compile_commands.json",
+      reason: "points_into_donor",
+      targetHasCdb: true,
+    } as const;
     const summary: RelocationSummary = { ...SUMMARY, cdb };
 
     assert.match(describeRelocation(summary), /; compile_commands.json links into the donor worktree, so nothing was written$/);
@@ -190,13 +252,18 @@ describe("describeRelocation", () => {
   });
 
   it("says that the CLI reported an unknown compilation database action", () => {
-    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "unknown", path: undefined, reason: undefined } };
+    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "unknown", path: undefined, reason: undefined, targetHasCdb: true } };
 
     assert.match(describeRelocation(summary), /; compile_commands.json: unknown result, see the log$/);
   });
 
   it("warns when git tracks the compilation database", () => {
-    const cdb = { action: "kept_tracked", path: "/work/feature/compile_commands.json", reason: "tracked_by_git" } as const;
+    const cdb = {
+      action: "kept_tracked",
+      path: "/work/feature/compile_commands.json",
+      reason: "tracked_by_git",
+      targetHasCdb: true,
+    } as const;
 
     assert.match(describeRelocation({ ...SUMMARY, cdb }), /; git tracks compile_commands.json, so it was not replaced$/);
   });

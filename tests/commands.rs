@@ -157,6 +157,7 @@ fn relocate_prints_json_summary() {
     assert_eq!(summary["shards"], expected_shards);
     assert_eq!(summary["cdb"]["action"], "written");
     assert_eq!(summary["cdb"]["path"], repos.worktree.join(CDB_RELATIVE_PATH).to_str().unwrap());
+    assert_eq!(summary["cdb"]["target_has_cdb"], true);
     assert_eq!(summary["reindex"]["has_cdb_main_files"], true);
     assert_eq!(summary["reindex"]["reindexed_tus"], serde_json::json!([repos.worktree.join("src/tu0.cpp")]));
     assert!(summary["reindex"]["stale_files"].is_u64(), "{summary}");
@@ -211,7 +212,8 @@ fn relocate_keeps_cdb_that_git_tracks() {
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
-    let expected_cdb = serde_json::json!({ "action": "kept_tracked", "path": target_cdb, "reason": "tracked_by_git" });
+    let expected_cdb =
+        serde_json::json!({ "action": "kept_tracked", "path": target_cdb, "reason": "tracked_by_git", "target_has_cdb": true });
     assert_eq!(summary["cdb"], expected_cdb);
     assert_eq!(fs::read_to_string(&target_cdb).unwrap(), "[]\n");
     assert_contains(&run.stderr, "git tracks");
@@ -230,7 +232,8 @@ fn relocate_never_writes_through_link_to_donor_cdb() {
 
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
-    let expected_cdb = serde_json::json!({ "action": "skipped_link", "path": target_link, "reason": "points_at_donor_cdb" });
+    let expected_cdb =
+        serde_json::json!({ "action": "skipped_link", "path": target_link, "reason": "points_at_donor_cdb", "target_has_cdb": true });
     assert_eq!(summary["cdb"], expected_cdb);
     assert_eq!(fs::read(&donor_cdb).unwrap(), donor_json);
     assert_contains(&run.stderr, "links to the donor's database");
@@ -248,6 +251,7 @@ fn relocate_warns_that_clangd_ignores_index_behind_skipped_dangling_link() {
     assert_eq!(run.exit_code, SUCCESS_EXIT_CODE, "{}", run.stderr);
     let summary: serde_json::Value = serde_json::from_str(&run.stdout).unwrap();
     assert_eq!(summary["cdb"]["reason"], "leaves_target");
+    assert_eq!(summary["cdb"]["target_has_cdb"], false);
     assert_contains(
         &run.stderr,
         "links outside the target, so the relocated compile_commands.json is not written through it; clangd will not use the index until the target has one",
@@ -267,6 +271,7 @@ fn relocate_reports_cdb_failure_after_writing_shards() {
     assert_eq!(summary["cdb"]["action"], "failed");
     assert_eq!(summary["cdb"]["path"], serde_json::Value::Null);
     assert_contains(summary["cdb"]["reason"].as_str().unwrap(), "parsing compilation database");
+    assert_eq!(summary["cdb"]["target_has_cdb"], false);
     assert_eq!(summary["reindex"]["has_cdb_main_files"], false);
     assert_contains(&run.stderr, "cannot relocate compile_commands.json: ");
     assert_contains(&run.stderr, "; clangd will not use the index until the target has one");
