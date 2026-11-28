@@ -103,12 +103,25 @@ Each shard is written back in the format version it was read in; the tool never 
 | --- | --- | --- |
 | 16, 17 | 18 | not supported; shards are skipped |
 | 18, 19 | 19 | quadratic, as clangd 18 and 19 |
-| 20 to 22 | 20 | linear (LLVM 23's), although clangd 20 to 22 probe quadratically |
+| 20 to 22 | 20 | quadratic, as clangd 20 to 22 |
 | 23 | 20 | linear, as clangd 23 |
 | llvm main (2026-11) | 21 | linear |
 
 Formats 19 and 20 share one layout; 20 only adds a `RefKind` bit (`Call`) and a symbol flag (`HasDocComment`), and 21 adds `Symbol::Tags`.
-Verified end to end with clangd 19.1.2 and 23.1.0.
+LLVM 23 switched `StringMap` from quadratic to linear probing (llvm-project `a296bdef76`).
+Format 20 alone does not tell clangd 20 to 22 from 23, so for it the prediction takes the clangd major from the `-resource-dir=<install>/lib/clang/<major>` that clangd adds to each compile command it stores in a translation unit's shard:
+
+| Newest TU shard format | Newest clangd major in the `-resource-dir=` of those shards | Probing |
+| --- | --- | --- |
+| 19 | any | quadratic |
+| 20 | 20 to 22 | quadratic |
+| 20 | 23 | linear |
+| 20 | none, or one that does not write format 20 | linear, with a warning that clangd 20 to 22 would probe quadratically |
+| 21 | any | linear |
+
+The major is the number before the first `.` in the directory's last component, so `/usr/lib/llvm-21/lib/clang/21` and `.../lib/clang/21.1.0` both give 21.
+clangd adds the flag only when the command sets no resource directory itself, so a command with its own `-resource-dir=` names that directory's clang instead, and one with only the separate `-resource-dir <dir>` form names none.
+Verified end to end with clangd 19.1.2, 22.1.6 and 23.1.0.
 
 ## How it works
 
@@ -129,7 +142,7 @@ A readable database entry without a shard is reported separately, as clangd inde
 - Only clangd index format versions 19, 20 and 21 (clangd 18 to 23 and llvm main as of 2026-11) are relocated; shards of other versions are skipped.
 - Only the target root's index is relocated, not the donor's `build/.cache/clangd/index`, so files under an in-tree `build/`, such as generated headers, have no shard in the target and their main files are reindexed.
 - Without a usable compilation database clangd reindexes nothing; the prediction then walks the index's translation units and is labelled as holding once a database exists.
-- The predicted owner of a file shared by several translation units assumes the `StringMap` probing of the table above; clangd 20 to 22, which write format 20 but probe quadratically, or a clangd built against a different implementation can pick another owner.
+- The predicted owner of a file shared by several translation units assumes the `StringMap` probing of the tables above; format 20 shards whose compile commands name no clangd resource directory, a compile command that sets its own resource directory, or a clangd built against a different implementation can lead clangd to pick another owner.
 - A file outside the target root is looked up in the user index even when clangd would store it with another project, such as an out-of-tree build directory with its own compilation database.
 - Relocated compilation databases are pretty-printed with object keys sorted.
 
