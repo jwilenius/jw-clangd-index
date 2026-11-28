@@ -1,7 +1,7 @@
 import * as path from "node:path";
 
 /** What `relocate` did with the compilation database. */
-const CDB_ACTIONS = [
+const KNOWN_CDB_ACTIONS = [
   "target_has_one",
   "target_has_none",
   "donor_has_none",
@@ -11,7 +11,8 @@ const CDB_ACTIONS = [
   "skipped_link",
   "failed",
 ] as const;
-export type CdbAction = (typeof CDB_ACTIONS)[number];
+/** `unknown` stands for an action of a newer CLI, which the extension cannot describe. */
+export type CdbAction = (typeof KNOWN_CDB_ACTIONS)[number] | "unknown";
 /** Actions after which the target has no compilation database, so clangd ignores the index. */
 const CDB_MISSING_ACTIONS: readonly CdbAction[] = ["target_has_none", "donor_has_none"];
 
@@ -60,7 +61,10 @@ export class SummaryFormatError extends Error {
 
 type JsonObject = Readonly<Record<string, unknown>>;
 
-/** @throws SyntaxError when `text` is not JSON, {@link SummaryFormatError} when a field is missing or mistyped. */
+/**
+ * Optional fields may be missing as well as `null`, since a CLI built before they were added omits them.
+ * @throws SyntaxError when `text` is not JSON, {@link SummaryFormatError} when a required field is missing or a field is mistyped.
+ */
 export function parseRelocationSummary(text: string): RelocationSummary {
   const summary = asObject(JSON.parse(text), "summary");
   return {
@@ -88,14 +92,15 @@ function parseShardCounts(shards: JsonObject): ShardCounts {
 
 function parseCdbSummary(cdb: JsonObject): CdbSummary {
   const action = readString(cdb, "action");
-  if (!isCdbAction(action)) {
-    throw new SummaryFormatError(`unknown cdb.action ${JSON.stringify(action)}`);
-  }
-  return { action, path: readOptionalString(cdb, "path"), reason: readOptionalString(cdb, "reason") };
+  return {
+    action: isKnownCdbAction(action) ? action : "unknown",
+    path: readOptionalString(cdb, "path"),
+    reason: readOptionalString(cdb, "reason"),
+  };
 }
 
-function isCdbAction(action: string): action is CdbAction {
-  return (CDB_ACTIONS as readonly string[]).includes(action);
+function isKnownCdbAction(action: string): action is CdbAction {
+  return (KNOWN_CDB_ACTIONS as readonly string[]).includes(action);
 }
 
 function parseReindexSummary(reindex: JsonObject): ReindexSummary {
@@ -125,10 +130,13 @@ function readString(object: JsonObject, key: string): string {
 
 function readOptionalString(object: JsonObject, key: string): string | undefined {
   const value = object[key];
-  if (value !== null && typeof value !== "string") {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
     throw new SummaryFormatError(`${key} is neither a string nor null`);
   }
-  return value ?? undefined;
+  return value;
 }
 
 function readNumber(object: JsonObject, key: string): number {
@@ -140,7 +148,8 @@ function readNumber(object: JsonObject, key: string): number {
 }
 
 function readOptionalNumber(object: JsonObject, key: string): number | undefined {
-  return object[key] === null ? undefined : readNumber(object, key);
+  const value = object[key];
+  return value === undefined || value === null ? undefined : readNumber(object, key);
 }
 
 function readBoolean(object: JsonObject, key: string): boolean {
@@ -183,6 +192,9 @@ function describeCdbWarning(summary: RelocationSummary): string {
   }
   if (action === "skipped_link") {
     return describeSkippedLink(summary);
+  }
+  if (action === "unknown") {
+    return "; compile_commands.json: unknown result, see the log";
   }
   return "";
 }

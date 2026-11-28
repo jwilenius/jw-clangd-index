@@ -107,8 +107,22 @@ describe("parseRelocationSummary", () => {
     assert.throws(() => parseRelocationSummary(withField(["shards", "relocated"], undefined)), SummaryFormatError);
   });
 
-  it("rejects an unknown cdb action", () => {
-    assert.throws(() => parseRelocationSummary(withField(["cdb", "action"], "moved")), /unknown cdb.action "moved"/);
+  it("reads the summary of a CLI that predates cdb.reason and reindex_failure", () => {
+    const json = withField(["cdb", "reason"], undefined, withField(["reindex_failure"], undefined));
+
+    const summary = parseRelocationSummary(json);
+
+    assert.deepEqual(summary, SUMMARY);
+  });
+
+  it("rejects an optional field of the wrong type", () => {
+    assert.throws(() => parseRelocationSummary(withField(["reindex_failure"], 1)), /reindex_failure is neither a string nor null/);
+  });
+
+  it("reads an unknown cdb action as unknown", () => {
+    const summary = parseRelocationSummary(withField(["cdb", "action"], "moved"));
+
+    assert.equal(summary.cdb.action, "unknown");
   });
 
   it("rejects a path list with a non-string entry", () => {
@@ -165,6 +179,12 @@ describe("describeRelocation", () => {
       describeRelocation(INCOMPLETE_SUMMARY),
       "relocated 9876 shards from main (12 kept, 2 failed); reindex not predicted; compile_commands.json was not relocated",
     );
+  });
+
+  it("says that the CLI reported an unknown compilation database action", () => {
+    const summary: RelocationSummary = { ...SUMMARY, cdb: { action: "unknown", path: undefined, reason: undefined } };
+
+    assert.match(describeRelocation(summary), /; compile_commands.json: unknown result, see the log$/);
   });
 
   it("warns when git tracks the compilation database", () => {
