@@ -157,17 +157,25 @@ Verified end to end with clangd 19.1.2, 22.1.6 and 23.1.0.
 
 ## How it works
 
-Each shard is a RIFF file whose chunks refer to a single string table, so rewriting the table's path strings (raw paths and `file:` URIs, matched only at path boundaries) relocates every symbol, reference and include-graph entry at once, and the shard is renamed after the xxh3 hash of its new path.
-A self-check verifies that some file in each shard hashes to its original name, which proves this tool hashes paths as the clangd that wrote it.
-git supplies the donor choice and the files deleted in the target, whose shards are skipped.
+Each shard is a RIFF file whose chunks refer to a single string table.
+Rewriting the table's path strings (raw paths and `file:` URIs, matched only at path boundaries) therefore relocates every symbol, reference and include-graph entry at once.
+The shard is then renamed after the xxh3 hash of its new path.
+A self-check verifies that some file in each shard hashes to the shard's original name, which proves that this tool hashes paths the same way as the clangd that wrote the shard.
+git supplies the choice of donor and the files deleted in the target, whose shards are skipped.
 The reindex prediction follows clangd's loader and its `shardIsStale` check and uses no git.
 The main files are the target compilation database's entries (`file` resolved against `directory`), or the shards flagged as translation units when the target has no database.
-A file belongs to the first main file whose include walk reaches it, in the order clangd loads them: the iteration order of the `llvm::StringMap` that holds the database's entries, with the probing of the clangd that wrote the TU shards with the newest format version (see above), or path order without a database.
+A file belongs to the first main file whose include walk reaches it, in the order clangd loads the main files.
+With a database, that order is the iteration order of the `llvm::StringMap` that holds the database's entries, with the probing of the clangd that wrote the TU shards with the newest format version (see above).
+Without a database, it is path order.
 A reached file is stale when it is readable and either has no shard or the xxh3 digest of its contents differs from the digest in its shard.
 An unreadable file, such as one deleted in the target, is never stale.
 Only the main file a stale file belongs to is reindexed.
-A file outside the target root, such as a system header, has its shard in clangd's user index, where the prediction reads it: on Linux `$XDG_CACHE_HOME/clangd/index` or else `~/.cache/clangd/index`; on macOS `clangd/index` in the per-user cache directory under `/var/folders` that `getconf DARWIN_USER_CACHE_DIR` prints, as LLVM ignores `XDG_CACHE_HOME` there.
-clangd assigns each file to the nearest directory with a compilation database, so with an in-tree `build/compile_commands.json` the directory `build/` is a project of its own: the prediction reads the shards of files under it from `build/.cache/clangd/index`, and leaves its main files out of the root database's, as clangd's broadcast filter does.
+A file outside the target root, such as a system header, has its shard in clangd's user index, and the prediction reads it there.
+On Linux the user index is `$XDG_CACHE_HOME/clangd/index`, or else `~/.cache/clangd/index`.
+On macOS it is `clangd/index` in the per-user cache directory under `/var/folders` that `getconf DARWIN_USER_CACHE_DIR` prints, because LLVM ignores `XDG_CACHE_HOME` there.
+clangd assigns each file to the nearest directory with a compilation database, so an in-tree `build/compile_commands.json` makes `build/` a project of its own.
+The prediction then reads the shards of files under `build/` from `build/.cache/clangd/index`.
+It also leaves the main files of `build/` out of the root database's main files, as clangd's broadcast filter does.
 A readable database entry without a shard is reported separately, as clangd indexes it from scratch.
 
 ## Limitations
