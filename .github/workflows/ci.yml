@@ -1,7 +1,7 @@
 name: Build, test and package
 
-# Every push to main checks the Rust crate and the VS Code extension and packages the linux-x64 installer. Nothing is
-# tagged, released or published.
+# Every push to main checks the Rust crate and the VS Code extension and packages an installer for each Linux and macOS
+# target. Nothing is tagged, released or published.
 on:
   push:
     branches: [main]
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  package:
+  check:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -41,17 +41,62 @@ jobs:
         run: |
           npm run notices
           git diff --exit-code -- THIRD-PARTY-NOTICES.txt
-      - name: Check and package the extension
+      - name: Check the extension
         working-directory: vscode
         run: |
           npm ci
           npm run typecheck
           npm run format:check
           npm test
-          npm run package
+
+  # Linux binaries are static musl builds, so one runs on every distribution. darwin-x64 is cross-built on an arm64
+  # runner, where its tests cannot run.
+  package:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            triple: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            is-native: true
+          - target: linux-arm64
+            triple: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            is-native: true
+          - target: darwin-x64
+            triple: x86_64-apple-darwin
+            runner: macos-latest
+            is-native: false
+          - target: darwin-arm64
+            triple: aarch64-apple-darwin
+            runner: macos-latest
+            is-native: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.triple }}
+          rustup default stable
+      - name: Test against the target
+        if: matrix.is-native
+        run: cargo test --target ${{ matrix.triple }}
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - name: Package the extension
+        working-directory: vscode
+        run: |
+          npm ci
+          npm run package -- --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: jw-clangd-index-vsix
+          name: jw-clangd-index-${{ matrix.target }}-vsix
           path: vscode/*.vsix
           if-no-files-found: error
           retention-days: 30
