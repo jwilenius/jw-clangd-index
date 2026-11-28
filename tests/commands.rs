@@ -339,6 +339,7 @@ fn write_external_header_shard(cache_home: &Path, include_dir: &Path) {
 }
 
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "on macOS the user index is not under XDG_CACHE_HOME, so the test cannot redirect it")]
 fn relocate_reads_shards_of_external_headers_from_user_index() {
     let repos = indexed_repo_with_worktree();
     let cache_home = repos.base.join("cache");

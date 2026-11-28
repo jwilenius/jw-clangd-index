@@ -116,7 +116,7 @@ The reindex prediction follows clangd's loader and its `shardIsStale` check and 
 The main files are the target compilation database's entries (`file` resolved against `directory`), or the shards flagged as translation units when the target has no database.
 A file belongs to the first main file whose include walk reaches it, in the order clangd loads them: the iteration order of the `llvm::StringMap` that holds the database's entries, with the probing of the clangd that wrote the newest shards (see above), or path order without a database.
 A reached file is stale when it is readable and the xxh3 digest of its contents differs from the digest in its own shard, or it has no shard; only the main file it belongs to is reindexed.
-A file outside the target root, such as a system header, has its shard in clangd's user index, `$XDG_CACHE_HOME/clangd/index` or else `~/.cache/clangd/index`, where the prediction reads it.
+A file outside the target root, such as a system header, has its shard in clangd's user index, where the prediction reads it: on Linux `$XDG_CACHE_HOME/clangd/index` or else `~/.cache/clangd/index`; on macOS `clangd/index` in the per-user cache directory under `/var/folders` that `getconf DARWIN_USER_CACHE_DIR` prints, as LLVM ignores `XDG_CACHE_HOME` there.
 clangd assigns each file to the nearest directory with a compilation database, so with an in-tree `build/compile_commands.json` the directory `build/` is a project of its own: the prediction reads the shards of files under it from `build/.cache/clangd/index`, and leaves its main files out of the root database's, as clangd's broadcast filter does.
 A readable database entry without a shard is reported separately, as clangd indexes it from scratch.
 
@@ -141,6 +141,7 @@ Scripts in the shared script library (`~/projects/ai-config/tmp/script-library/`
 - `llvm-stringmap-order/run.py` builds a driver against LLVM's own `StringMap.cpp` and `xxhash.cpp` from an llvm-project clone (`--llvm-repo`) or raw files of a commit (`--raw-base`) and prints the iteration order of a fixed compilation database; its output is the expected order in the `string_map_order` golden test.
 
 Run clangd with `XDG_CACHE_HOME` in a scratch directory, so the user index in `~/.cache` stays untouched.
+On macOS clangd ignores `XDG_CACHE_HOME`, so the E2E run there writes to the real user index.
 
 ## License
 

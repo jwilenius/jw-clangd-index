@@ -21,7 +21,9 @@ use crate::relocate::worktree_relocation::{WorktreeRelocationRequest, relocate_w
 /// `diff` exit code when the indexes differ; equal indexes and other successes exit with 0.
 const DIFFERENT_EXIT_CODE: u8 = 1;
 const MAPPING_SEPARATOR: char = '=';
-/// clangd's cache directory is `llvm::sys::path::cache_directory`: `$XDG_CACHE_HOME`, else `$HOME/.cache`.
+/// clangd's cache directory is `llvm::sys::path::cache_directory`: on macOS `confstr(_CS_DARWIN_USER_CACHE_DIR)`,
+/// elsewhere `$XDG_CACHE_HOME`; then `$HOME/.cache`.
+#[cfg(not(target_os = "macos"))]
 const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
 const HOME_ENV: &str = "HOME";
 const HOME_CACHE_DIR: &str = ".cache";
@@ -163,7 +165,7 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
         is_dry_run: args.is_dry_run,
         is_overwrite: args.is_overwrite,
         is_relocate_cdb: args.is_relocate_cdb,
-        user_index_dir: user_index_dir(env::var_os(CACHE_HOME_ENV), env::var_os(HOME_ENV)),
+        user_index_dir: user_index_dir(platform_cache_dir(), env::var_os(HOME_ENV)),
     })?;
     if !args.is_json {
         write!(out, "{report}")?;
@@ -175,16 +177,42 @@ fn run_relocate(args: RelocateArgs, out: &mut impl Write) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// clangd's user index. Unlike LLVM, an empty variable counts as unset and an unset `HOME` gives
-/// no index instead of falling back to the passwd entry.
-fn user_index_dir(cache_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+/// clangd's user index: in `platform_cache_dir`, else in `$HOME/.cache`. Unlike LLVM, an empty path
+/// counts as unset and an unset `HOME` gives no index instead of falling back to the passwd entry.
+fn user_index_dir(platform_cache_dir: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let is_set = |value: &OsString| !value.is_empty();
-    let cache_dir = match (cache_home.filter(is_set), home.filter(is_set)) {
-        (Some(cache_home), _) => PathBuf::from(cache_home),
+    let cache_dir = match (platform_cache_dir.filter(is_set), home.filter(is_set)) {
+        (Some(platform_cache_dir), _) => PathBuf::from(platform_cache_dir),
         (None, Some(home)) => Path::new(&home).join(HOME_CACHE_DIR),
         (None, None) => return None,
     };
     Some(cache_dir.join(USER_INDEX_RELATIVE_DIR))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_cache_dir() -> Option<OsString> {
+    env::var_os(CACHE_HOME_ENV)
+}
+
+/// The per-user cache directory under `/var/folders`; LLVM ignores `XDG_CACHE_HOME` on macOS.
+#[cfg(target_os = "macos")]
+fn platform_cache_dir() -> Option<OsString> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStringExt;
+
+    // SAFETY: a null buffer of length 0 only asks for the length, which includes the terminating NUL.
+    let length = unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, std::ptr::null_mut(), 0) };
+    if length == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; length];
+    // SAFETY: `buffer` is writable for `length` bytes, and confstr writes at most that many, NUL included.
+    let written = unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buffer.as_mut_ptr().cast(), length) };
+    if written == 0 || written > length {
+        return None;
+    }
+    let path = CStr::from_bytes_until_nul(&buffer).ok()?;
+    Some(OsString::from_vec(path.to_bytes().to_vec()))
 }
 
 fn run_dump(args: &DumpArgs, out: &mut impl Write) -> Result<ExitCode> {
@@ -234,13 +262,21 @@ mod tests {
     }
 
     #[test]
-    fn finds_user_index_in_xdg_cache_home_before_home() {
-        let cache_home = Some(OsString::from("/xdg"));
+    fn finds_user_index_in_platform_cache_dir_before_home() {
+        let platform_cache_dir = Some(OsString::from("/xdg"));
         let home = Some(OsString::from("/home/u"));
 
-        assert_eq!(user_index_dir(cache_home, home.clone()), Some(PathBuf::from("/xdg/clangd/index")));
+        assert_eq!(user_index_dir(platform_cache_dir, home.clone()), Some(PathBuf::from("/xdg/clangd/index")));
         assert_eq!(user_index_dir(Some(OsString::new()), home), Some(PathBuf::from("/home/u/.cache/clangd/index")));
         assert_eq!(user_index_dir(None, None), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_darwin_user_cache_dir() {
+        let cache_dir = PathBuf::from(platform_cache_dir().unwrap());
+
+        assert!(cache_dir.is_absolute() && cache_dir.is_dir(), "{}", cache_dir.display());
     }
 
     fn parse(args: &[&str]) -> Command {
