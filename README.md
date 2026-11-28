@@ -17,7 +17,7 @@ cargo install --path .
 Requires git 2.36 or later (`git worktree list -z`).
 
 Supported platforms: Linux (x64, arm64) and macOS (x64, arm64); Windows is not supported, since the tool uses `std::os::unix`.
-Linux is tested end to end against real clangd; the macOS builds are built and tested in CI but have not been tested on a real Mac.
+Linux is tested end to end against real clangd; CI builds both macOS targets but runs the tests only for darwin-arm64, and neither has been tested on a real Mac.
 
 ## Usage
 
