@@ -79,6 +79,12 @@ A hook that this tool did not write is never replaced unless `--force`; the erro
 Installing again replaces this tool's own hook.
 `--no-relocate-cdb` and `--keep-existing` make the hook pass the same flags to `relocate`.
 
+## Automating relocation
+
+Relocation can always be run by hand: `cd <new-worktree> && jw-clangd-index relocate`.
+The [VS Code extension](#vs-code-extension) does it automatically when a linked worktree opens.
+`install-hook` installs an optional `post-checkout` hook that does it on `git worktree add` (see [Hook workflow](#hook-workflow)), which helps for worktrees used outside VS Code or created by agents.
+
 ## Hook workflow
 
 1. Index the main worktree once with clangd.
